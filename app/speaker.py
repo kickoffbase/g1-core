@@ -103,12 +103,12 @@ def _say_locked(text: str) -> dict:
             system_player = None
             force_unitree = True
 
-    log.info("speak: '%s' (mode=%s sink=%s)",
+    log.info("speak: '%s' (mode=%s sink=%s preroll=%dms)",
              text if len(text) <= 80 else text[:77] + "…",
-             _audio_mode(), sink_mode or "-")
+             _audio_mode(), sink_mode or "-", settings.audio_preroll_ms)
     _set_led(255, 255, 255)
     try:
-        for pcm in tts.stream(_one_chunk(text)):
+        for pcm in _with_preroll(tts.stream(_one_chunk(text)), settings.audio_preroll_ms):
             if _uses_unitree() or force_unitree:
                 robot.play_pcm(pcm)
             if system_player is not None:
@@ -150,6 +150,25 @@ def _say_locked(text: str) -> dict:
 def _one_chunk(text: str):
     """ElevenLabs accepts an iterator — for static text we just yield once."""
     yield text
+
+
+def _with_preroll(pcm_iter, preroll_ms: int):
+    """Prepend `preroll_ms` of digital silence (s16le mono 16 kHz).
+
+    Bluetooth (and even some USB) sinks need ~150-300 ms to leave standby
+    after the first PCM byte — without preroll the first phoneme is eaten.
+    Yielding zeros is equivalent to silent audio: PA / aplay open the
+    stream + the bluez sink reaches RUNNING before the real phoneme
+    arrives, so the utterance starts with the very first sound."""
+    if preroll_ms > 0:
+        n_bytes = (_PCM_BPS * preroll_ms) // 1000
+        # Round to an even number — s16le samples are 2 bytes.
+        if n_bytes % 2:
+            n_bytes += 1
+        if n_bytes:
+            yield b"\x00" * n_bytes
+    for chunk in pcm_iter:
+        yield chunk
 
 
 def _build_audio_commands(sink_mode: str) -> tuple[str, str]:

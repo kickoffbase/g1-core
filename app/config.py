@@ -58,6 +58,16 @@ class Settings(BaseSettings):
         default="jbl",
         description="Which sink the speaker prefers when AUDIO_OUTPUT uses 'system' (builtin | jbl)",
     )
+    audio_preroll_ms: int = Field(
+        default=250,
+        ge=0,
+        le=2000,
+        description=(
+            "Silence (ms) prepended to every utterance. Bluetooth speakers "
+            "leave standby in 150-300 ms — without preroll the first phoneme "
+            "is eaten ('…ello' instead of 'hello'). 0 disables it."
+        ),
+    )
 
     # ── Bluetooth speaker ──────────────────────────────────────────────
     # When set we proactively reconnect to this MAC every watchdog tick if
