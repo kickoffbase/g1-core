@@ -103,6 +103,18 @@ class Settings(BaseSettings):
     ngrok_domain: str = Field(default="", description="Optional reserved domain (stable public URL)")
     ngrok_api_port: int = Field(default=4041, description="Local ngrok inspector port (4040 is g1-brain's; pick a free one)")
 
+    # ── Camera (MJPEG preview for the operator panel) ──────────────────
+    # `camera_device` accepts either an integer V4L2 index ("0", "2") or
+    # a path ("/dev/video2"). The capture stays closed until somebody
+    # opens /camera/stream.mjpg, then auto-closes after camera_idle_close_s.
+    camera_enabled: bool = Field(default=True)
+    camera_device: str = Field(default="0", description="V4L2 index or /dev path")
+    camera_width: int = Field(default=640, ge=64, le=4096)
+    camera_height: int = Field(default=480, ge=64, le=4096)
+    camera_fps: int = Field(default=10, ge=1, le=60)
+    camera_jpeg_quality: int = Field(default=70, ge=1, le=100)
+    camera_idle_close_s: int = Field(default=10, ge=0, le=600)
+
     # ── Watchdog ───────────────────────────────────────────────────────
     watchdog_interval_s: float = Field(default=15.0, description="How often to re-check subsystems")
 

@@ -34,9 +34,7 @@ other consumers (e.g. SDK calls that want the head camera).
 
 from __future__ import annotations
 
-import io
 import logging
-import os
 import threading
 import time
 from typing import Any, Dict, Iterator, Optional
@@ -77,35 +75,26 @@ def _check_auth(x_api_key: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="invalid api key")
 
 
-def _device_from_env() -> Any:
-    """Return the value to pass to `cv2.VideoCapture`. Accepts either an
-    integer index ("0", "2") or a /dev path ("/dev/video2")."""
-    raw = os.getenv("CAMERA_DEVICE", "0").strip() or "0"
+def _resolve_device(raw: str) -> Any:
+    """Pass-through for `cv2.VideoCapture`: int index ("0") or /dev path."""
+    raw = (raw or "0").strip() or "0"
     try:
         return int(raw)
     except ValueError:
         return raw
 
 
-def _env_int(name: str, default: int, lo: int, hi: int) -> int:
-    try:
-        v = int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-    return max(lo, min(hi, v))
-
-
 class CameraService(Service):
     name = "camera"
 
     def __init__(self) -> None:
-        self._enabled = os.getenv("CAMERA_ENABLED", "true").lower() in ("1", "true", "yes")
-        self._device = _device_from_env()
-        self._width = _env_int("CAMERA_WIDTH", 640, 64, 4096)
-        self._height = _env_int("CAMERA_HEIGHT", 480, 64, 4096)
-        self._fps = _env_int("CAMERA_FPS", 10, 1, 60)
-        self._jpeg_quality = _env_int("CAMERA_JPEG_QUALITY", 70, 1, 100)
-        self._idle_close_s = _env_int("CAMERA_IDLE_CLOSE_S", 10, 0, 600)
+        self._enabled = settings.camera_enabled
+        self._device = _resolve_device(settings.camera_device)
+        self._width = settings.camera_width
+        self._height = settings.camera_height
+        self._fps = settings.camera_fps
+        self._jpeg_quality = settings.camera_jpeg_quality
+        self._idle_close_s = settings.camera_idle_close_s
 
         self._lock = threading.Lock()
         self._cap = None  # cv2.VideoCapture | None
@@ -405,7 +394,3 @@ def _multipart_chunk(jpeg: bytes) -> bytes:
         f"Content-Length: {len(jpeg)}\r\n\r\n"
     ).encode("ascii")
     return head + jpeg + b"\r\n"
-
-
-# Keep this last so the module import never fails because of it.
-_ = io  # silence unused-import linters in environments without cv2
