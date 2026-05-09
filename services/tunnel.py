@@ -133,9 +133,11 @@ class TunnelService(Service):
         ]
         if settings.ngrok_domain:
             cmd.extend(["--url", settings.ngrok_domain])
-        # Run the inspector on a non-default port so we never collide with
-        # a leftover g1-brain ngrok bound to 4040.
-        cmd.extend(["--inspect-db-size", "0"])
+        # Disable the local inspector entirely — we don't use it, and turning
+        # it off means ngrok never tries to bind 4040 (which would collide
+        # with a leftover g1-brain agent). Preflight kills stale ngroks too,
+        # this is just belt-and-braces.
+        cmd.extend(["--inspect=false"])
         return cmd
 
     @staticmethod
