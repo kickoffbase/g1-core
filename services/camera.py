@@ -46,11 +46,22 @@ log = logging.getLogger(__name__)
 
 _router_import_error: Optional[Exception] = None
 try:
-    from fastapi import APIRouter, Header, HTTPException, Response
+    from fastapi import APIRouter, Body, Header, HTTPException, Response
     from fastapi.responses import StreamingResponse
+    from pydantic import BaseModel
 except ImportError as e:  # pragma: no cover
-    APIRouter = Header = HTTPException = Response = StreamingResponse = None  # type: ignore[assignment]
+    APIRouter = Body = Header = HTTPException = Response = StreamingResponse = None  # type: ignore[assignment]
+    BaseModel = object  # type: ignore[assignment,misc]
     _router_import_error = e
+
+
+# Quality presets selectable from the operator UI. Resolutions higher
+# than `hd` are intentionally not exposed — Vercel proxy caps a single
+# stream at 60s anyway, and 720p over ngrok-free is already pushing it.
+PRESETS: Dict[str, Dict[str, int]] = {
+    "standard": {"width": 640, "height": 480, "fps": 10, "jpeg_quality": 70},
+    "hd":       {"width": 1280, "height": 720, "fps": 15, "jpeg_quality": 85},
+}
 
 # OpenCV is the only hard dependency. We don't crash the whole service
 # at import time when it's missing — `start()` warns and the endpoints
@@ -66,6 +77,10 @@ except Exception as e:  # pragma: no cover - covers ImportError + native loader 
 # Multipart boundary used for the MJPEG stream. The exact string doesn't
 # matter as long as it never appears in the JPEG payload.
 _BOUNDARY = "g1corecam"
+
+
+class _PresetPayload(BaseModel):
+    preset: str
 
 
 def _check_auth(x_api_key: Optional[str]) -> None:
@@ -84,17 +99,29 @@ def _resolve_device(raw: str) -> Any:
         return raw
 
 
+def _initial_preset() -> str:
+    """Pick the boot-time preset. Honour an explicit env override; if the
+    operator already pinned width/height/fps in .env we auto-detect which
+    preset they meant so the UI toggle starts in the right state."""
+    explicit = (settings.camera_preset or "").strip().lower()
+    if explicit in PRESETS:
+        return explicit
+    # Fallback: match against width — operators rarely set just FPS.
+    for name, p in PRESETS.items():
+        if settings.camera_width == p["width"] and settings.camera_height == p["height"]:
+            return name
+    return "standard"
+
+
 class CameraService(Service):
     name = "camera"
 
     def __init__(self) -> None:
         self._enabled = settings.camera_enabled
         self._device = _resolve_device(settings.camera_device)
-        self._width = settings.camera_width
-        self._height = settings.camera_height
-        self._fps = settings.camera_fps
-        self._jpeg_quality = settings.camera_jpeg_quality
         self._idle_close_s = settings.camera_idle_close_s
+        self._preset = _initial_preset()
+        self._apply_preset_unlocked()
 
         self._lock = threading.Lock()
         self._cap = None  # cv2.VideoCapture | None
@@ -113,6 +140,48 @@ class CameraService(Service):
 
         self._open_error: Optional[str] = None
 
+    # ── Preset switching ───────────────────────────────────────────────
+
+    def _apply_preset_unlocked(self) -> None:
+        """Project the active preset into the per-frame parameters used
+        by the capture loop and the JPEG encoder. Caller is responsible
+        for closing+reopening the capture if the device is already open."""
+        p = PRESETS[self._preset]
+        self._width = int(p["width"])
+        self._height = int(p["height"])
+        self._fps = int(p["fps"])
+        self._jpeg_quality = int(p["jpeg_quality"])
+
+    def _set_preset(self, name: str) -> Dict[str, Any]:
+        name = (name or "").strip().lower()
+        if name not in PRESETS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown preset '{name}', expected one of {sorted(PRESETS)}",
+            )
+        with self._lock:
+            if name == self._preset and self._cap is not None:
+                return {"preset": self._preset, "changed": False}
+            self._preset = name
+            self._apply_preset_unlocked()
+            # If the device is already open we close it; the next
+            # subscriber tick reopens at the new resolution. Existing
+            # streamers will reconnect within ~1s on the next frame wait.
+            had_open_cap = self._cap is not None
+            if had_open_cap:
+                self._close_capture_unlocked(reason=f"preset → {name}")
+                if self._subscribers > 0:
+                    self._open_capture_unlocked()
+        log.info("camera: preset switched → %s (%dx%d@%dfps q=%d)",
+                 name, self._width, self._height, self._fps, self._jpeg_quality)
+        return {
+            "preset": name,
+            "changed": True,
+            "size": [self._width, self._height],
+            "fps": self._fps,
+            "jpeg_quality": self._jpeg_quality,
+        }
+
     # ── Service API ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -126,8 +195,8 @@ class CameraService(Service):
             )
             return
         log.info(
-            "CameraService ready (device=%s %dx%d@%dfps q=%d, lazy)",
-            self._device, self._width, self._height, self._fps, self._jpeg_quality,
+            "CameraService ready (device=%s preset=%s %dx%d@%dfps q=%d, lazy)",
+            self._device, self._preset, self._width, self._height, self._fps, self._jpeg_quality,
         )
 
     def stop(self) -> None:
@@ -142,8 +211,11 @@ class CameraService(Service):
                 "available": _cv2_import_error is None,
                 "open": self._cap is not None,
                 "device": str(self._device),
+                "preset": self._preset,
+                "presets": sorted(PRESETS.keys()),
                 "size": [self._width, self._height],
                 "fps": self._fps,
+                "jpeg_quality": self._jpeg_quality,
                 "subscribers": self._subscribers,
                 "last_frame_age_s": (
                     round(time.monotonic() - self._latest_ts, 2)
@@ -165,6 +237,24 @@ class CameraService(Service):
         def status(x_api_key: Optional[str] = Header(default=None)):
             _check_auth(x_api_key)
             return self.health()
+
+        @router.get("/preset")
+        def get_preset(x_api_key: Optional[str] = Header(default=None)):
+            _check_auth(x_api_key)
+            with self._lock:
+                return {
+                    "preset": self._preset,
+                    "presets": sorted(PRESETS.keys()),
+                    "current": PRESETS[self._preset],
+                }
+
+        @router.post("/preset")
+        def set_preset(
+            payload: _PresetPayload = Body(...),
+            x_api_key: Optional[str] = Header(default=None),
+        ):
+            _check_auth(x_api_key)
+            return self._set_preset(payload.preset)
 
         @router.get("/snapshot.jpg")
         def snapshot(x_api_key: Optional[str] = Header(default=None)):
