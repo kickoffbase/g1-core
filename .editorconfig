@@ -1,0 +1,16 @@
+# Editor-side LF enforcement. Cursor / VS Code / JetBrains all honour
+# this file. Keeping it in the repo means cross-platform edits never
+# silently reintroduce CRLF into shell scripts.
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+trim_trailing_whitespace = true
+
+[*.{sh,service,py,json,md}]
+end_of_line = lf
+
+[*.{md}]
+trim_trailing_whitespace = false
