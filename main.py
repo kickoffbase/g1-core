@@ -236,7 +236,11 @@ def main() -> int:
     # just needs to be registered before start_all() runs.
     service_registry.register(BluetoothService())
     service_registry.register(MusicService())
-    service_registry.register(WebhookService())
+    # WebhookService gets the registry explicitly: when started via
+    # `python3 -m main` the running module is `__main__`, while `from main
+    # import service_registry` would re-import a fresh, empty copy under
+    # the name `main` — leaving the webhook with zero routers to mount.
+    service_registry.register(WebhookService(registry=service_registry))
     service_registry.register(TunnelService())
     service_registry.register(WatchdogService())
     service_registry.start_all()

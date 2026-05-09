@@ -21,8 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import sys
 import threading
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -82,17 +83,25 @@ def _render_ring(lines: int) -> str:
     return handler.render(limit=lines)
 
 
+def _resolve_registry() -> Any:
+    """Resolve the service registry from the running `__main__` module.
+
+    `from main import service_registry` would re-import main.py as a
+    *separate* module under `python3 -m main`, returning a fresh empty
+    registry. We always pull from the actual __main__ object."""
+    main_mod = sys.modules.get("__main__") or sys.modules.get("main")
+    return getattr(main_mod, "service_registry", None) if main_mod else None
+
+
 def _debug_snapshot() -> Dict[str, Any]:
     """Build the rich debug JSON. Every probe is best-effort: a missing
     binary or non-zero exit becomes a string error in its slot, the
     rest of the dict is unaffected."""
     import os
     import platform
-    import sys
 
-    from main import service_registry  # late import to avoid cycles
-
-    health = service_registry.health_snapshot()
+    registry = _resolve_registry()
+    health = registry.health_snapshot() if registry else {"ok": False, "error": "registry unavailable"}
 
     sinks = _run_text(["pactl", "list", "sinks", "short"], timeout=4)
     sources = _run_text(["pactl", "list", "sources", "short"], timeout=4)
@@ -188,10 +197,15 @@ def _read_journal(lines: int) -> tuple[str, Optional[str]]:
 class WebhookService(Service):
     name = "webhook"
 
-    def __init__(self) -> None:
+    def __init__(self, registry: Optional[Any] = None) -> None:
         self._server: Optional["uvicorn.Server"] = None
         self._thread: Optional[threading.Thread] = None
         self._started = False
+        # Holding a direct reference avoids `from main import …`, which
+        # under `python3 -m main` resolves to a *fresh* import of main.py
+        # (a different module object than __main__) and gives us an empty
+        # ServiceRegistry. See main.py for the call site.
+        self._registry = registry
 
     def start(self) -> None:
         if self._started:
@@ -253,8 +267,15 @@ class WebhookService(Service):
         # Auto-mount routers from every other registered service. This is
         # what lets `services/bluetooth.py` ship its own `/bluetooth/*`
         # endpoints without webhook.py ever importing it.
-        from main import service_registry
-        services = service_registry.services()
+        registry = self._registry or _resolve_registry()
+        services: List[Service] = []
+        if registry is not None:
+            try:
+                services = list(registry.services())
+            except Exception as e:
+                log.warning("Webhook: registry.services() failed: %s", e)
+        else:
+            log.warning("Webhook: no service registry — running with built-in routes only")
         log.info("Webhook: scanning %d service(s) for HTTP routers", len(services))
         for svc in services:
             if svc is self:
@@ -278,8 +299,10 @@ class WebhookService(Service):
 
         @app.get("/health")
         def health():
-            from main import service_registry  # late import: avoid cycle at module load
-            return service_registry.health_snapshot()
+            registry = self._registry or _resolve_registry()
+            if registry is None:
+                return {"ok": False, "error": "registry unavailable"}
+            return registry.health_snapshot()
 
         @app.get("/debug")
         def debug(x_api_key: Optional[str] = Header(default=None)):
