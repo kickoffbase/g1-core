@@ -38,6 +38,7 @@ from app.robot import robot
 from app.speaker import say, speak_personality_intro
 from services.base import Service
 from services.bluetooth import BluetoothService
+from services.music import MusicService
 from services.tunnel import TunnelService
 from services.watchdog import WatchdogService
 from services.webhook import WebhookService
@@ -91,6 +92,10 @@ class ServiceRegistry:
         per = personality.get()
         el_err = tts.get_session_error()
         pending_n = bus.pending()
+        services_health = {svc.name: svc.health() for svc in self._services}
+        music_h = services_health.get("music") or {}
+        music_playing = bool(music_h.get("playing"))
+        music_url = music_h.get("url") if music_playing else None
         snap = {
             "ok": True,
             "version": __version__,
@@ -103,7 +108,7 @@ class ServiceRegistry:
             "robot": robot.health(),
             "tts": {"session_error": el_err},
             "audio_output": settings.audio_output,
-            "services": {svc.name: svc.health() for svc in self._services},
+            "services": services_health,
             "queue": {"pending": pending_n, "history": len(bus.recent(limit=settings.command_history_size))},
             "uptime_s": round(time.monotonic() - _started_at, 1),
             # ── Robohire / g1-brain-compatible flat fields ──────────────────
@@ -113,8 +118,8 @@ class ServiceRegistry:
             "commands_paused": False,
             "voice_loop_paused": False,
             "elevenlabs_session_error": el_err,
-            "music_playing": False,
-            "music_prompt": None,
+            "music_playing": music_playing,
+            "music_prompt": music_url,
         }
         return snap
 
@@ -216,6 +221,7 @@ def main() -> int:
     # every other service at start_all time, so anything providing routes
     # just needs to be registered before start_all() runs.
     service_registry.register(BluetoothService())
+    service_registry.register(MusicService())
     service_registry.register(WebhookService())
     service_registry.register(TunnelService())
     service_registry.register(WatchdogService())

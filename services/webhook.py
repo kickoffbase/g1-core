@@ -27,6 +27,7 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
 from app import command_bus, log_ring, personality
+from app import version_string
 from app.command_bus import bus
 from app.config import settings
 from services.base import Service
@@ -79,6 +80,76 @@ def _render_ring(lines: int) -> str:
     if handler is None:
         return ""
     return handler.render(limit=lines)
+
+
+def _debug_snapshot() -> Dict[str, Any]:
+    """Build the rich debug JSON. Every probe is best-effort: a missing
+    binary or non-zero exit becomes a string error in its slot, the
+    rest of the dict is unaffected."""
+    import os
+    import platform
+    import sys
+
+    from main import service_registry  # late import to avoid cycles
+
+    health = service_registry.health_snapshot()
+
+    sinks = _run_text(["pactl", "list", "sinks", "short"], timeout=4)
+    sources = _run_text(["pactl", "list", "sources", "short"], timeout=4)
+    pa_info = _run_text(["pactl", "info"], timeout=4)
+    bt_devices = _run_text(["bluetoothctl", "devices", "Connected"], timeout=4)
+    bt_paired = _run_text(["bluetoothctl", "paired-devices"], timeout=4)
+    listening = _run_text(
+        ["ss", "-tlnp"], timeout=4,
+        fallback=["netstat", "-tlnp"],
+    )
+    procs = _run_text(["pgrep", "-af", "g1-core|ngrok|paplay|aplay|ffmpeg"], timeout=4)
+
+    return {
+        "version": version_string(),
+        "health": health,
+        "host": {
+            "uname": platform.platform(),
+            "python": sys.version.split()[0],
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+            "env_personality": os.environ.get("PERSONALITY"),
+            "env_audio_output": os.environ.get("AUDIO_OUTPUT"),
+        },
+        "pulseaudio": {
+            "info": pa_info,
+            "sinks": sinks,
+            "sources": sources,
+        },
+        "bluetooth": {
+            "connected": bt_devices,
+            "paired": bt_paired,
+        },
+        "ports": {
+            "listening": listening,
+            "webhook": settings.webhook_port,
+        },
+        "processes": procs,
+    }
+
+
+def _run_text(args: list, timeout: float = 4.0, fallback: Optional[list] = None) -> str:
+    """Run a probe and return stdout. On error, return a one-line marker
+    like '<unavailable: ...>' so the operator UI can still render the
+    field instead of erroring out the whole /debug call."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        if fallback is not None:
+            return _run_text(fallback, timeout=timeout)
+        return f"<unavailable: {args[0]} not installed>"
+    except subprocess.TimeoutExpired:
+        return f"<timeout: {' '.join(args[:2])}>"
+    except Exception as e:
+        return f"<error: {e}>"
+    if r.returncode != 0 and not r.stdout:
+        return f"<exit {r.returncode}: {(r.stderr or '').strip()[:200]}>"
+    return r.stdout or r.stderr or ""
 
 
 def _read_journal(lines: int) -> tuple[str, Optional[str]]:
@@ -201,6 +272,17 @@ class WebhookService(Service):
             from main import service_registry  # late import: avoid cycle at module load
             return service_registry.health_snapshot()
 
+        @app.get("/debug")
+        def debug(x_api_key: Optional[str] = Header(default=None)):
+            """Heavy diagnostic snapshot for the operator panel.
+
+            Strictly read-only — runs `pactl`, `ss`, `bluetoothctl`,
+            `pgrep` and stitches their output together with the in-process
+            `/health` data. Auth-protected because `pactl list` leaks
+            sink names and process titles."""
+            _check_auth(x_api_key)
+            return _debug_snapshot()
+
         @app.post("/say", status_code=202)
         def say(
             payload: SayPayload = Body(...),
@@ -293,36 +375,6 @@ class WebhookService(Service):
                 "active": persona.slug,
                 "display_name": persona.display_name,
             }
-
-        @app.post("/control/pause", status_code=200)
-        def control_pause(x_api_key: Optional[str] = Header(default=None)):
-            # Same contract as g1-brain: no-op on the wire, real pause is in
-            # Robohire DB (g1-core has no mic/LLM loop to mute).
-            _check_auth(x_api_key)
-            log.info("Webhook: /control/pause (noop on g1-core)")
-            return {"ok": True, "commands_paused": True, "noop": True}
-
-        @app.post("/control/resume", status_code=200)
-        def control_resume(x_api_key: Optional[str] = Header(default=None)):
-            _check_auth(x_api_key)
-            log.info("Webhook: /control/resume (noop on g1-core)")
-            return {"ok": True, "commands_paused": False, "noop": True}
-
-        @app.post("/music")
-        def music_unsupported(x_api_key: Optional[str] = Header(default=None)):
-            _check_auth(x_api_key)
-            raise HTTPException(
-                status_code=501,
-                detail="Music is not available on g1-core — use g1-brain for /music",
-            )
-
-        @app.post("/music/stop")
-        def music_stop_unsupported(x_api_key: Optional[str] = Header(default=None)):
-            _check_auth(x_api_key)
-            raise HTTPException(
-                status_code=501,
-                detail="Music is not available on g1-core — use g1-brain for /music/stop",
-            )
 
         @app.get("/logs", response_class=PlainTextResponse)
         def logs(

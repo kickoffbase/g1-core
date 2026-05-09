@@ -261,6 +261,8 @@ def preflight() -> int:
 
     if not shutil.which("ngrok"):
         log("WARN: 'ngrok' not in PATH — tunnel will be skipped")
+    if not shutil.which("ffmpeg"):
+        log("WARN: 'ffmpeg' not in PATH — /music endpoint will return 501")
 
     return port
 
