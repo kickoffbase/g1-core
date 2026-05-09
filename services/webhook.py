@@ -18,7 +18,9 @@ carry it as `X-API-Key`.
 
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
 import threading
 from typing import Any, Dict, Optional
 
@@ -33,20 +35,18 @@ log = logging.getLogger(__name__)
 
 _fastapi_import_error: Optional[Exception] = None
 try:
-    from fastapi import Body, FastAPI, Header, HTTPException, Query
+    from fastapi import Body, FastAPI, Header, HTTPException, Query, Request
+    from fastapi.responses import PlainTextResponse
     import uvicorn
 except ImportError as e:  # pragma: no cover — only happens on a misconfigured host
-    Body = FastAPI = Header = HTTPException = Query = None  # type: ignore[assignment]
+    Body = FastAPI = Header = HTTPException = Query = Request = None  # type: ignore[assignment]
+    PlainTextResponse = None  # type: ignore[assignment]
     uvicorn = None  # type: ignore[assignment]
     _fastapi_import_error = e
 
 
 class SayPayload(BaseModel):
     text: str
-    command_id: Optional[str] = None
-
-
-class GreetPayload(BaseModel):
     command_id: Optional[str] = None
 
 
@@ -58,6 +58,20 @@ def _client_source(forwarded_for: Optional[str]) -> str:
     if not forwarded_for or not forwarded_for.strip():
         return "webhook:direct"
     return f"webhook:{forwarded_for.split(',')[0].strip()}"
+
+
+# Robohire forwards /logs with unit=g1-brain; g1-core runs as a user service
+# with ngrok in-process — everything lands in the same journal.
+_LOG_UNITS = frozenset(
+    {
+        "g1-core",
+        "g1-core.service",
+        "g1-brain",
+        "g1-brain.service",
+        "ngrok",
+        "ngrok.service",
+    }
+)
 
 
 class WebhookService(Service):
@@ -163,21 +177,41 @@ class WebhookService(Service):
                 source=_client_source(x_forwarded_for),
                 command_id=payload.command_id,
             )
-            return cmd.to_dict()
+            out = cmd.to_dict()
+            out.setdefault("queued", "SAY")
+            out.setdefault("text", text)
+            return out
 
         @app.post("/greet", status_code=202)
-        def greet(
-            payload: GreetPayload = Body(default=None),
+        async def greet(
+            request: "Request",
             x_api_key: Optional[str] = Header(default=None),
             x_forwarded_for: Optional[str] = Header(default=None, alias="X-Forwarded-For"),
         ):
+            """Must accept POST with **no JSON body** — Robohire's panel sends
+            a bare POST; g1-brain never used a Body() here."""
             _check_auth(x_api_key)
+            command_id: Optional[str] = None
+            try:
+                raw = await request.body()
+                if raw and raw.strip():
+                    data = json.loads(raw.decode("utf-8"))
+                    if isinstance(data, dict):
+                        cid = data.get("command_id")
+                        if cid is not None:
+                            command_id = str(cid).strip() or None
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                command_id = None
+
             cmd = bus.submit(
                 kind=command_bus.KIND_GREET,
                 source=_client_source(x_forwarded_for),
-                command_id=(payload.command_id if payload else None),
+                command_id=command_id,
             )
-            return cmd.to_dict()
+            # Blend g1-brain shape with g1-core's rich command tracking.
+            base = cmd.to_dict()
+            base.setdefault("queued", "GREET")
+            return base
 
         @app.get("/commands/{cid}")
         def get_command(cid: str, x_api_key: Optional[str] = Header(default=None)):
@@ -212,6 +246,82 @@ class WebhookService(Service):
             if slug not in personality.list_available():
                 raise HTTPException(status_code=404, detail=f"unknown personality '{slug}'")
             persona = personality.set_active(slug)
-            return {"active": persona.slug, "display_name": persona.display_name}
+            return {
+                "ok": True,
+                "active": persona.slug,
+                "display_name": persona.display_name,
+            }
+
+        @app.post("/control/pause", status_code=200)
+        def control_pause(x_api_key: Optional[str] = Header(default=None)):
+            # Same contract as g1-brain: no-op on the wire, real pause is in
+            # Robohire DB (g1-core has no mic/LLM loop to mute).
+            _check_auth(x_api_key)
+            log.info("Webhook: /control/pause (noop on g1-core)")
+            return {"ok": True, "commands_paused": True, "noop": True}
+
+        @app.post("/control/resume", status_code=200)
+        def control_resume(x_api_key: Optional[str] = Header(default=None)):
+            _check_auth(x_api_key)
+            log.info("Webhook: /control/resume (noop on g1-core)")
+            return {"ok": True, "commands_paused": False, "noop": True}
+
+        @app.post("/music")
+        def music_unsupported(x_api_key: Optional[str] = Header(default=None)):
+            _check_auth(x_api_key)
+            raise HTTPException(
+                status_code=501,
+                detail="Music is not available on g1-core — use g1-brain for /music",
+            )
+
+        @app.post("/music/stop")
+        def music_stop_unsupported(x_api_key: Optional[str] = Header(default=None)):
+            _check_auth(x_api_key)
+            raise HTTPException(
+                status_code=501,
+                detail="Music is not available on g1-core — use g1-brain for /music/stop",
+            )
+
+        @app.get("/logs", response_class=PlainTextResponse)
+        def logs(
+            unit: str = Query("g1-core"),
+            lines: int = Query(300, ge=1, le=2000),
+            x_api_key: Optional[str] = Header(default=None),
+        ):
+            _check_auth(x_api_key)
+            u = (unit or "").strip()
+            if u not in _LOG_UNITS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown unit (allowed: {sorted(_LOG_UNITS)})",
+                )
+            try:
+                result = subprocess.run(
+                    [
+                        "journalctl",
+                        "--user",
+                        "-u",
+                        "g1-core.service",
+                        "-n",
+                        str(lines),
+                        "--no-pager",
+                        "--output=short-iso",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+            except FileNotFoundError:
+                raise HTTPException(status_code=501, detail="journalctl not available")
+            except subprocess.TimeoutExpired:
+                raise HTTPException(status_code=504, detail="journalctl timed out")
+
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or "journalctl failed").strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"journalctl exit {result.returncode}: {detail[:400]}",
+                )
+            return PlainTextResponse(result.stdout or "(no output)")
 
         return app

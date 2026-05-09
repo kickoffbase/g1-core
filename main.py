@@ -80,16 +80,32 @@ class ServiceRegistry:
     def health_snapshot(self) -> Dict[str, Any]:
         from app import tts
         per = personality.get()
-        return {
+        el_err = tts.get_session_error()
+        pending_n = bus.pending()
+        snap = {
             "ok": True,
-            "personality": {"active": per.slug, "display_name": per.display_name},
+            # g1-core native shape (nested)
+            "personality_detail": {
+                "active": per.slug,
+                "display_name": per.display_name,
+            },
             "robot": robot.health(),
-            "tts": {"session_error": tts.get_session_error()},
+            "tts": {"session_error": el_err},
             "audio_output": settings.audio_output,
             "services": {svc.name: svc.health() for svc in self._services},
-            "queue": {"pending": bus.pending(), "history": len(bus.recent(limit=settings.command_history_size))},
+            "queue": {"pending": pending_n, "history": len(bus.recent(limit=settings.command_history_size))},
             "uptime_s": round(time.monotonic() - _started_at, 1),
+            # ── Robohire / g1-brain-compatible flat fields ──────────────────
+            "brain": "g1-core",
+            "personality": per.slug,
+            "pending": pending_n,
+            "commands_paused": False,
+            "voice_loop_paused": False,
+            "elevenlabs_session_error": el_err,
+            "music_playing": False,
+            "music_prompt": None,
         }
+        return snap
 
 
 service_registry = ServiceRegistry()
