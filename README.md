@@ -84,7 +84,7 @@ g1-core/
 ## Install on the Orin
 
 ```bash
-# 1. Get the code into ~/g1-core
+# 1. Get the code into ~/g1-core (from Windows: PowerShell scp / WinSCP / WSL)
 scp -r g1-core unitree@192.168.123.164:~/
 
 # 2. SSH in and configure
@@ -98,12 +98,35 @@ nano .env   # set ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID, NGROK_DOMAIN, WEBHOOK
 bash scripts/bt-connect.sh AA:BB:CC:DD:EE:FF
 # add BLUETOOTH_MAC=AA:BB:CC:DD:EE:FF to .env
 
-# 4. Install + start the service (also stops g1-brain if active)
-bash systemd/install.sh
+# 4. Install + start the service (also stops g1-brain if active).
+#    Always go through bootstrap.py — it strips Windows CRLF from every
+#    shell script first and only THEN runs install.sh, so a Windows-
+#    edited file can never break the install with `$'\r': command not
+#    found`. Subsequent restarts can use plain `systemctl --user
+#    restart g1-core`.
+python3 systemd/bootstrap.py
 
 # 5. Watch it boot
 journalctl --user -u g1-core -f
 ```
+
+### "$'\r': command not found" / "set: pipefail: invalid option name"
+
+You copied files from Windows and CRLF leaked into a `.sh`. Two recoveries:
+
+```bash
+# A — preferred: bootstrap re-sanitizes everything and runs install.sh
+python3 ~/g1-core/systemd/bootstrap.py
+
+# B — manual one-liner (no python needed)
+cd ~/g1-core && sed -i 's/\r$//' systemd/*.sh systemd/*.service scripts/*.sh && \
+  bash systemd/install.sh
+```
+
+Permanent prevention is already wired in: `.editorconfig` tells Cursor /
+VS Code / JetBrains to save every `*.sh` with LF, and `.gitattributes`
+forces git to do the same on checkout. As long as you edit files
+through one of those, CRLF can't sneak back in.
 
 ## External commands
 
