@@ -1,0 +1,40 @@
+## g1-core — USER-level systemd unit
+##
+## Why user-level (not /etc/systemd/system):
+##   - Inherits the unitree login session: ALSA / PulseAudio / Bluetooth
+##     ACLs work the same as for an interactive shell. System-level units
+##     have to fight logind for the audio device every time.
+##   - No sudo for daily operations (`systemctl --user restart g1-core`).
+##
+## Install at:  ~/.config/systemd/user/g1-core.service
+## Linger so the unit boots without a login:
+##     sudo loginctl enable-linger unitree
+##     systemctl --user enable g1-core
+##     systemctl --user start g1-core
+## Logs:        journalctl --user -u g1-core -f
+
+[Unit]
+Description=g1-core (stable webhook + speaker for the Unitree G1)
+After=default.target sound.target bluetooth.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/g1-core
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.local/bin
+
+ExecStartPre=/bin/bash %h/g1-core/systemd/preflight.sh
+ExecStart=/bin/bash %h/g1-core/systemd/run.sh
+
+# Crash-recovery defaults: restart hard, but back off so a misconfig doesn't
+# loop the journal at 100 Hz.
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=120
+StartLimitBurst=10
+TimeoutStopSec=15
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

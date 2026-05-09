@@ -1,0 +1,15 @@
+{
+  "slug": "nickk",
+  "display_name": "Nickk",
+  "description": "Bart persona with the Nickk ElevenLabs voice.",
+  "intro_line": "Tap tap — mic check, humans. Let's see who's funnier tonight.",
+  "outro_line": "I'll be here all week. Tip your humans.",
+  "voice": {
+    "voice_id": "NNtyQhp6OmzGABcMygc2",
+    "model": "eleven_flash_v2_5",
+    "stability": 0.55,
+    "similarity": 0.8,
+    "style": 0.25,
+    "speed": 1.1
+  }
+}

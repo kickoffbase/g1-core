@@ -1,0 +1,15 @@
+{
+  "slug": "kickoff",
+  "display_name": "Bart the Kickoff Mascot",
+  "description": "Original kickoff.fun token-launchpad mascot.",
+  "intro_line": "Beep boop! I'm Bart. Let's talk Kickoff, humanoid.",
+  "outro_line": "Bart powering down. Remember, kickoff dot fun. Beep boop!",
+  "voice": {
+    "voice_id": "x4vxA3pHuelysbUXxN7q",
+    "model": "eleven_flash_v2_5",
+    "stability": 0.35,
+    "similarity": 0.75,
+    "style": 0.6,
+    "speed": 1.2
+  }
+}
