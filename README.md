@@ -67,11 +67,11 @@ g1-core/
 │   ├── kickoff.json
 │   └── nickk.json
 ├── systemd/
-│   ├── g1-core.service    # USER-level unit
+│   ├── g1-core.service    # USER-level unit (ExecStart = python preflight.py)
 │   ├── install.sh         # disables g1-brain, installs + starts g1-core
 │   ├── uninstall.sh
-│   ├── preflight.sh       # kills stale processes, frees ports — runs on every start
-│   └── run.sh             # tiny launcher (exec python -m main)
+│   ├── bootstrap.py       # one-shot installer (immune to CRLF in any .sh)
+│   └── preflight.py       # CRLF-sweep + port cleanup, then exec python -m main
 ├── scripts/
 │   ├── bt-connect.sh      # pair + connect a Bluetooth speaker
 │   ├── health.sh          # one-line health probe

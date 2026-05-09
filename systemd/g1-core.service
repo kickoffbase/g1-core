@@ -24,8 +24,12 @@ WorkingDirectory=%h/g1-core
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.local/bin
 
-ExecStartPre=/bin/bash %h/g1-core/systemd/preflight.sh
-ExecStart=/bin/bash %h/g1-core/systemd/run.sh
+# A single Python entrypoint replaces the old preflight.sh + run.sh chain.
+# Python is immune to CRLF in source files (universal-newline mode), so a
+# Windows-edited repo can never fail at boot the way bash scripts do with
+# `set: pipefail: invalid option name`. The script sanitizes line endings,
+# kills stale processes, frees ports, then exec()s into `python3 -m main`.
+ExecStart=/usr/bin/python3 %h/g1-core/systemd/preflight.py
 
 # Crash-recovery defaults: restart hard, but back off so a misconfig doesn't
 # loop the journal at 100 Hz.

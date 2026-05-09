@@ -30,15 +30,13 @@ systemctl --user disable g1-brain.service 2>/dev/null || true
 sudo systemctl stop g1-brain.service 2>/dev/null || true
 sudo systemctl disable g1-brain.service 2>/dev/null || true
 
-echo "==> 3. Normalize line endings + chmod"
-if command -v dos2unix >/dev/null 2>&1; then
-  dos2unix -q systemd/*.sh systemd/*.service 2>/dev/null || true
-else
-  for f in systemd/*.sh systemd/*.service; do
-    [[ -f "$f" ]] && sed -i 's/\r$//' "$f"
-  done
-fi
-chmod +x systemd/*.sh
+echo "==> 3. Normalize line endings + chmod (full repo, via Python)"
+# Python tolerates CRLF in its own source, so even if THIS shell script
+# itself got CRLF-corrupted after copy-from-Windows, the line above failed
+# loud and clear instead of silently mis-installing. preflight.py does the
+# same sweep on every service start as a safety net.
+python3 systemd/preflight.py --fix-only
+chmod +x systemd/*.sh systemd/*.py scripts/*.sh
 
 echo "==> 4. Install unit at $SVC_DIR/g1-core.service"
 mkdir -p "$SVC_DIR"
