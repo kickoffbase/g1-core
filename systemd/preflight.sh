@@ -33,15 +33,24 @@ PORT="$(read_env WEBHOOK_PORT)";  PORT="${PORT:-8766}"
 echo "[preflight] repo=$REPO port=$PORT"
 
 # ── CRLF rescue ────────────────────────────────────────────────────────
-echo "[preflight] normalizing line endings"
-if command -v dos2unix >/dev/null 2>&1; then
-  dos2unix -q systemd/*.sh systemd/*.service 2>/dev/null || true
-else
-  for f in systemd/*.sh systemd/*.service; do
-    [[ -f "$f" ]] && sed -i 's/\r$//' "$f" 2>/dev/null || true
-  done
+# Run `sed -i 's/\r$//'` over EVERY text file in the repo on every boot.
+# This means: no matter how the operator copied files (scp from Windows,
+# WinSCP drag-and-drop, mounted SMB share, GitHub zip download, …), the
+# next `systemctl --user restart g1-core` heals them. We exclude .git/
+# .venv/__pycache__ to keep the wall-time under a few hundred ms.
+echo "[preflight] normalizing line endings (whole repo)"
+if command -v find >/dev/null 2>&1; then
+  find . \
+      \( -path ./.git -o -path ./.venv -o -path '*/__pycache__' \) -prune -o \
+      -type f \( -name '*.sh' -o -name '*.service' -o -name '*.py' \
+              -o -name '*.json' -o -name '*.md' -o -name '*.toml' \
+              -o -name '*.yml' -o -name '*.yaml' \
+              -o -name '.env' -o -name '.env.example' -o -name '.editorconfig' \
+              -o -name '.gitattributes' \) \
+      -print0 2>/dev/null \
+    | xargs -0 -r sed -i 's/\r$//' 2>/dev/null || true
 fi
-chmod +x systemd/*.sh 2>/dev/null || true
+chmod +x systemd/*.sh scripts/*.sh systemd/bootstrap.py 2>/dev/null || true
 
 # ── Conflicting g1-brain ────────────────────────────────────────────────
 # g1-brain is the predecessor service. If it's still active it will hold
