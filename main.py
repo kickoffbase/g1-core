@@ -28,7 +28,7 @@ from typing import Any, Dict, List
 from rich.console import Console
 from rich.logging import RichHandler
 
-from app import __version__, version_string
+from app import __version__, git_full_sha, git_repo_url, git_sha, version_string
 from app import audio_sink
 from app import bluetooth as bt
 from app import command_bus, log_ring, personality
@@ -96,10 +96,24 @@ class ServiceRegistry:
         music_h = services_health.get("music") or {}
         music_playing = bool(music_h.get("playing"))
         music_url = music_h.get("url") if music_playing else None
+        sha_short = git_sha()
+        sha_full = git_full_sha()
+        repo_url = git_repo_url()
+        commit_url = (
+            f"{repo_url}/commit/{sha_full}" if repo_url and sha_full else None
+        )
         snap = {
             "ok": True,
             "version": __version__,
             "version_full": version_string(),
+            # Operator-panel deep-link to the exact commit running on the
+            # robot. Empty fields if this isn't a git checkout.
+            "git": {
+                "sha": sha_short,
+                "sha_full": sha_full,
+                "repo_url": repo_url,
+                "commit_url": commit_url,
+            },
             # g1-core native shape (nested)
             "personality_detail": {
                 "active": per.slug,
