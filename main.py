@@ -38,6 +38,7 @@ from app.robot import robot
 from app.speaker import say, speak_personality_intro
 from services.base import Service
 from services.bluetooth import BluetoothService
+from services.camera import CameraService
 from services.music import MusicService
 from services.tunnel import TunnelService
 from services.watchdog import WatchdogService
@@ -235,6 +236,7 @@ def main() -> int:
     # every other service at start_all time, so anything providing routes
     # just needs to be registered before start_all() runs.
     service_registry.register(BluetoothService())
+    service_registry.register(CameraService())
     service_registry.register(MusicService())
     # WebhookService gets the registry explicitly: when started via
     # `python3 -m main` the running module is `__main__`, while `from main

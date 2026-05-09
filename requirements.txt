@@ -4,3 +4,7 @@ fastapi>=0.110
 uvicorn>=0.27
 websocket-client>=1.7
 rich>=13
+# Camera service: V4L2 capture + JPEG encoding for the MJPEG stream.
+# Headless build avoids dragging in the X11/Qt UI deps we don't need on
+# a robot. NumPy comes along as an OpenCV transitive dep.
+opencv-python-headless>=4.8
