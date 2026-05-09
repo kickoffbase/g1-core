@@ -254,18 +254,27 @@ class WebhookService(Service):
         # what lets `services/bluetooth.py` ship its own `/bluetooth/*`
         # endpoints without webhook.py ever importing it.
         from main import service_registry
-        for svc in service_registry.services():
+        services = service_registry.services()
+        log.info("Webhook: scanning %d service(s) for HTTP routers", len(services))
+        for svc in services:
             if svc is self:
                 continue
             try:
                 router = svc.http_router()
             except Exception as e:
-                log.warning("Service %s: http_router() raised: %s", svc.name, e)
+                log.warning("Service %s: http_router() raised: %s", svc.name, e, exc_info=True)
                 continue
             if router is None:
+                log.info("Service %s: no HTTP router", svc.name)
                 continue
-            app.include_router(router)
-            log.info("Mounted HTTP router from service: %s", svc.name)
+            try:
+                app.include_router(router)
+                log.info("Mounted HTTP router from service: %s", svc.name)
+            except Exception as e:
+                log.warning(
+                    "Service %s: include_router failed: %s", svc.name, e,
+                    exc_info=True,
+                )
 
         @app.get("/health")
         def health():
