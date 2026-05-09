@@ -94,17 +94,18 @@ def _say_locked(text: str) -> dict:
         sink_mode = (settings.audio_sink_default or "jbl").strip().lower()
         if sink_mode in ("builtin", "jbl"):
             audio_sink.apply(sink_mode)
+        primary_cmd, fallback_cmd = _build_audio_commands(sink_mode)
         try:
-            system_player = SystemAudioPlayer(
-                settings.system_audio_cmd,
-                settings.system_audio_fallback_cmd,
-            )
+            system_player = SystemAudioPlayer(primary_cmd, fallback_cmd)
             system_player.start()
         except Exception as e:
             log.error("System audio unavailable: %s — falling back to G1 built-in speaker", e)
             system_player = None
             force_unitree = True
 
+    log.info("speak: '%s' (mode=%s sink=%s)",
+             text if len(text) <= 80 else text[:77] + "…",
+             _audio_mode(), sink_mode or "-")
     _set_led(255, 255, 255)
     try:
         for pcm in tts.stream(_one_chunk(text)):
@@ -128,7 +129,7 @@ def _say_locked(text: str) -> dict:
             system_player.close()
         _set_led(0, 0, 0)
 
-    return {
+    result = {
         "played_bytes": played_bytes,
         "duration_s": round(played_bytes / _PCM_BPS, 2) if played_bytes else 0.0,
         "wall_s": round(time.monotonic() - started, 2),
@@ -137,11 +138,45 @@ def _say_locked(text: str) -> dict:
         "fallback_to_builtin": force_unitree,
         "error": error,
     }
+    if error:
+        log.warning("speak: done with error=%s after %.2fs", error, result["wall_s"])
+    else:
+        log.info("speak: done %.2fs %db played sink=%s%s",
+                 result["wall_s"], played_bytes, sink_mode or "-",
+                 " (fallback→builtin)" if force_unitree else "")
+    return result
 
 
 def _one_chunk(text: str):
     """ElevenLabs accepts an iterator — for static text we just yield once."""
     yield text
+
+
+def _build_audio_commands(sink_mode: str) -> tuple[str, str]:
+    """Pick the player command(s) for this utterance.
+
+    When pactl is alive AND we know the actual sink name, we go through
+    `paplay --device=<sink>` — this guarantees audio reaches the JBL
+    instead of the chest speaker (raw `aplay` ignores PulseAudio's
+    default-sink). For any other case we fall back to the operator's
+    SYSTEM_AUDIO_CMD (typically `aplay`)."""
+    primary = settings.system_audio_cmd
+    fallback = settings.system_audio_fallback_cmd
+    sink = audio_sink.resolved_sink(sink_mode) if sink_mode else None
+    if sink:
+        # `--client-name` makes the stream identifiable in pavucontrol;
+        # `--latency-msec=200` keeps the bluez sink primed without
+        # introducing a noticeable delay. The raw format matches what
+        # ElevenLabs streams (s16le, mono, 16 kHz).
+        paplay = (
+            f"paplay --device={sink} --client-name=g1-core "
+            "--raw --rate=16000 --format=s16le --channels=1 --latency-msec=200"
+        )
+        primary = paplay
+        # Fallback to the operator-configured command (usually aplay) so
+        # we still play *something* if PA dies mid-utterance.
+        fallback = settings.system_audio_cmd
+    return primary, fallback
 
 
 def _set_led(r: int, g: int, b: int) -> None:

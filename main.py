@@ -27,7 +27,7 @@ from typing import Any, Dict, List
 from rich.console import Console
 from rich.logging import RichHandler
 
-from app import command_bus, personality
+from app import command_bus, log_ring, personality
 from app.command_bus import bus
 from app.config import settings
 from app.robot import robot
@@ -46,6 +46,11 @@ logging.basicConfig(
     datefmt="[%X]",
     handlers=[RichHandler(console=console, rich_tracebacks=True, show_path=False)],
 )
+# Capture every record into an in-process ring so /logs works even when
+# the user-journal is empty (very common — Ubuntu defaults persist only
+# the *system* journal). RichHandler stays for the terminal, RingHandler
+# powers the operator's web log panel.
+log_ring.install(capacity=4000)
 log = logging.getLogger("g1-core")
 
 

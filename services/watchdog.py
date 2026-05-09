@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Any, Dict
 
-from app import bluetooth
+from app import audio_sink, bluetooth
 from app.config import settings
 from app.robot import robot
 from services.base import Service
@@ -72,6 +72,15 @@ class WatchdogService(Service):
 
         if settings.bluetooth_autoreconnect and settings.bluetooth_mac:
             self._maybe_reconnect_bt()
+
+        # Keep the active PulseAudio sink awake — JBL / any bluez sink
+        # otherwise sleeps after ~5s of silence and the next /say takes
+        # an extra second of A2DP re-handshake. No-op when pactl absent
+        # or no mode applied yet.
+        try:
+            audio_sink.keepalive()
+        except Exception:
+            log.debug("audio_sink.keepalive() failed", exc_info=True)
 
     def _maybe_reconnect_bt(self) -> None:
         mac = settings.bluetooth_mac.strip()

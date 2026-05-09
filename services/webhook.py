@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel
 
-from app import command_bus, personality
+from app import command_bus, log_ring, personality
 from app.command_bus import bus
 from app.config import settings
 from services.base import Service
@@ -74,6 +74,46 @@ _LOG_UNITS = frozenset(
 )
 
 
+def _render_ring(lines: int) -> str:
+    handler = log_ring.get()
+    if handler is None:
+        return ""
+    return handler.render(limit=lines)
+
+
+def _read_journal(lines: int) -> tuple[str, Optional[str]]:
+    """Try every reasonable journalctl invocation and return the first
+    one that produces output. Returns (text, error_for_operator)."""
+    candidates: list[list[str]] = [
+        # Persistent system journal filtered by user-unit metadata —
+        # works even when the user-journal directory does not exist.
+        ["journalctl", "_SYSTEMD_USER_UNIT=g1-core.service",
+         "-n", str(lines), "--no-pager", "--output=short-iso"],
+        # User-instance journal, if it exists.
+        ["journalctl", "--user", "-u", "g1-core.service",
+         "-n", str(lines), "--no-pager", "--output=short-iso"],
+        # Last resort — the system unit (in case the user installed it
+        # the legacy way).
+        ["journalctl", "-u", "g1-core.service",
+         "-n", str(lines), "--no-pager", "--output=short-iso"],
+    ]
+    last_err: Optional[str] = None
+    for cmd in candidates:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        except FileNotFoundError:
+            return "", "journalctl not available"
+        except subprocess.TimeoutExpired:
+            last_err = f"journalctl timed out: {' '.join(cmd[:3])}"
+            continue
+        out = (result.stdout or "").strip()
+        if result.returncode == 0 and out and "-- No entries --" not in out:
+            return result.stdout, None
+        if result.returncode != 0:
+            last_err = (result.stderr or result.stdout or "journalctl failed").strip()[:300]
+    return "", last_err
+
+
 class WebhookService(Service):
     name = "webhook"
 
@@ -95,7 +135,9 @@ class WebhookService(Service):
             app,
             host=settings.webhook_host,
             port=settings.webhook_port,
-            log_level="warning",
+            # `info` so server lifecycle lines reach the operator log;
+            # access_log stays off — every /health probe would spam it.
+            log_level="info",
             access_log=False,
         )
         self._server = uvicorn.Server(config)
@@ -286,8 +328,18 @@ class WebhookService(Service):
         def logs(
             unit: str = Query("g1-core"),
             lines: int = Query(300, ge=1, le=2000),
+            source: str = Query("auto", pattern="^(auto|ring|journal)$"),
             x_api_key: Optional[str] = Header(default=None),
         ):
+            """Return the last N log lines.
+
+            Sources, in order of reliability:
+              - `ring`    : in-process ring buffer (always works).
+              - `journal` : `journalctl` (system + user). May be empty if
+                            the host has no persistent user journal.
+              - `auto`    : journal first; fall back to ring if journal is
+                            unreachable / empty. We append a marker so the
+                            operator can tell which source served them."""
             _check_auth(x_api_key)
             u = (unit or "").strip()
             if u not in _LOG_UNITS:
@@ -295,33 +347,35 @@ class WebhookService(Service):
                     status_code=400,
                     detail=f"unknown unit (allowed: {sorted(_LOG_UNITS)})",
                 )
-            try:
-                result = subprocess.run(
-                    [
-                        "journalctl",
-                        "--user",
-                        "-u",
-                        "g1-core.service",
-                        "-n",
-                        str(lines),
-                        "--no-pager",
-                        "--output=short-iso",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=8,
-                )
-            except FileNotFoundError:
-                raise HTTPException(status_code=501, detail="journalctl not available")
-            except subprocess.TimeoutExpired:
-                raise HTTPException(status_code=504, detail="journalctl timed out")
 
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout or "journalctl failed").strip()
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"journalctl exit {result.returncode}: {detail[:400]}",
+            if source == "ring":
+                return PlainTextResponse(_render_ring(lines))
+
+            journal_text, journal_err = _read_journal(lines)
+
+            if source == "journal":
+                if journal_err:
+                    raise HTTPException(status_code=500, detail=journal_err)
+                return PlainTextResponse(journal_text or "(no output)")
+
+            # source == "auto"
+            ring_text = _render_ring(lines)
+            if journal_text and journal_text.strip():
+                # Both available — prefer journal (richer timestamps),
+                # show the in-process tail too if journal is short.
+                if journal_text.count("\n") >= max(20, lines // 5):
+                    return PlainTextResponse(journal_text)
+                merged = (
+                    f"{journal_text.rstrip()}\n"
+                    f"--- in-process ring tail (journal short) ---\n"
+                    f"{ring_text}"
                 )
-            return PlainTextResponse(result.stdout or "(no output)")
+                return PlainTextResponse(merged)
+
+            header = "(journal empty or unavailable, falling back to in-process ring)"
+            if journal_err:
+                header = f"(journal: {journal_err[:200]})"
+            body = ring_text or "(no log records yet — service just started?)"
+            return PlainTextResponse(f"{header}\n{body}")
 
         return app

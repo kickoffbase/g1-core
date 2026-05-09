@@ -49,6 +49,26 @@ def current() -> Optional[str]:
     return _applied
 
 
+def resolved_sink(mode: Optional[str] = None) -> Optional[str]:
+    """The actual PulseAudio sink name for `mode` (or the active mode).
+
+    Returns None when pactl is unavailable, the mode is misconfigured, or
+    the sink is not currently registered. Used by the speaker to talk
+    directly to JBL via `paplay --device=...` instead of the default
+    sink (paplay default → ALSA → chest speaker on the G1 Orin)."""
+    target = (mode or _applied or "").strip().lower()
+    if target not in ("builtin", "jbl"):
+        return None
+    if not _pulse_alive():
+        return None
+    sink = _sink_for(target)
+    if not sink:
+        return None
+    if sink not in _available_sinks():
+        return None
+    return sink
+
+
 def apply(mode: str) -> bool:
     """Switch the system default sink. Idempotent + thread-safe.
 
@@ -86,26 +106,58 @@ def apply(mode: str) -> bool:
             log.warning("audio_sink.apply: sink %r not registered with pactl — skipping", sink)
             return False
 
-        if target_mode == _applied:
-            return True
+        was_already = target_mode == _applied
+        if not was_already:
+            try:
+                subprocess.run(
+                    ["pactl", "set-default-sink", sink],
+                    check=True, capture_output=True, text=True, timeout=5,
+                )
+            except subprocess.CalledProcessError as e:
+                log.error("audio_sink.apply: pactl failed (sink=%s): %s",
+                          sink, (e.stderr or e.stdout or "").strip()[:200])
+                return False
+            except subprocess.TimeoutExpired:
+                log.error("audio_sink.apply: pactl timed out (sink=%s)", sink)
+                return False
 
-        try:
-            subprocess.run(
-                ["pactl", "set-default-sink", sink],
-                check=True, capture_output=True, text=True, timeout=5,
-            )
-        except subprocess.CalledProcessError as e:
-            log.error("audio_sink.apply: pactl failed (sink=%s): %s",
-                      sink, (e.stderr or e.stdout or "").strip()[:200])
-            return False
-        except subprocess.TimeoutExpired:
-            log.error("audio_sink.apply: pactl timed out (sink=%s)", sink)
-            return False
+            _applied = target_mode
+            log.info("Audio sink → %s (sink=%s%s)", target_mode, sink,
+                     " [fallback from jbl]" if target_mode != mode else "")
 
-        _applied = target_mode
-        log.info("Audio sink → %s (sink=%s%s)", target_mode, sink,
-                 " [fallback from jbl]" if target_mode != mode else "")
+        # Always wake the sink. PA suspends idle sinks after ~5s, and a
+        # suspended bluez sink means the JBL has dropped to standby —
+        # next playback then pays the A2DP handshake cost (1-2s of glitch
+        # / "robot lost the speaker" feeling). Calling suspend-sink with
+        # 0 forces it back to RUNNING immediately.
+        _wake_sink_locked(sink)
         return True
+
+
+def keepalive() -> None:
+    """Watchdog hook: keep the active sink awake so JBL never sleeps.
+
+    Cheap (one pactl call), idempotent, safe to invoke on every tick.
+    Without this, PA's `module-suspend-on-idle` parks the bluez sink
+    after 5s of silence and the next utterance has to re-handshake A2DP."""
+    with _lock:
+        if not _applied or not _pulse_alive():
+            return
+        sink = _sink_for(_applied)
+        if not sink or sink not in _available_sinks():
+            return
+        _wake_sink_locked(sink)
+
+
+def _wake_sink_locked(sink: str) -> None:
+    """Best-effort `pactl suspend-sink <sink> 0`. Caller holds `_lock`."""
+    try:
+        subprocess.run(
+            ["pactl", "suspend-sink", sink, "0"],
+            check=False, capture_output=True, text=True, timeout=3,
+        )
+    except Exception as e:  # never fatal — speaker still plays
+        log.debug("audio_sink.wake(%s) failed: %s", sink, e)
 
 
 # ── Internals ──────────────────────────────────────────────────────────

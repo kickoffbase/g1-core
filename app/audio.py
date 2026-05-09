@@ -39,11 +39,14 @@ class SystemAudioPlayer:
             cmd = (cmd or "").strip()
             if not cmd or cmd in commands:
                 continue
-            # Under systemd we typically have no PulseAudio user session, so
-            # `paplay` will fail with "Connection refused". Skip it unless the
-            # operator wired up PULSE_SERVER explicitly.
-            if cmd.startswith("paplay ") and not os.environ.get("PULSE_SERVER"):
-                log.warning("Skipping paplay (PULSE_SERVER unset); will try fallback")
+            # `paplay` needs to be able to find the user PA daemon. Under
+            # the user-level systemd unit XDG_RUNTIME_DIR is always set
+            # (it's how socket activation works), so we skip paplay only
+            # when both PULSE_SERVER and XDG_RUNTIME_DIR are missing —
+            # that's the classic system-unit-without-PA case.
+            if cmd.startswith("paplay") and not os.environ.get("PULSE_SERVER") \
+                    and not os.environ.get("XDG_RUNTIME_DIR"):
+                log.warning("Skipping paplay (no PULSE_SERVER / XDG_RUNTIME_DIR); will try fallback")
                 continue
             commands.append(cmd)
         if not commands:
