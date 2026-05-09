@@ -21,12 +21,16 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import threading
 import time
 from typing import Any, Dict, List
 
 from rich.console import Console
 from rich.logging import RichHandler
 
+from app import __version__, version_string
+from app import audio_sink
+from app import bluetooth as bt
 from app import command_bus, log_ring, personality
 from app.command_bus import bus
 from app.config import settings
@@ -89,6 +93,8 @@ class ServiceRegistry:
         pending_n = bus.pending()
         snap = {
             "ok": True,
+            "version": __version__,
+            "version_full": version_string(),
             # g1-core native shape (nested)
             "personality_detail": {
                 "active": per.slug,
@@ -148,6 +154,26 @@ def _execute(cmd: command_bus.Command) -> None:
 # ── Lifecycle ──────────────────────────────────────────────────────────
 
 
+def _submit_boot_greet(max_wait_s: float = 6.0) -> None:
+    """Wait for the BT speaker to actually be connected (so the greet
+    plays through JBL, not the chest), then submit the greet command.
+    Falls back gracefully — we never block the main loop and never skip
+    the greet entirely. If BT isn't configured we just speak immediately."""
+    target = (settings.bluetooth_mac or "").strip()
+    if not target or not bt.is_available():
+        bus.submit(command_bus.KIND_GREET, source="boot")
+        return
+    deadline = time.monotonic() + max_wait_s
+    while time.monotonic() < deadline:
+        try:
+            if bt.is_connected(target):
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+    bus.submit(command_bus.KIND_GREET, source="boot")
+
+
 def _install_signals() -> None:
     def handler(sig, frame):
         if settings.shutdown:
@@ -162,7 +188,10 @@ def _install_signals() -> None:
 
 def _print_banner() -> None:
     per = personality.get()
-    console.rule("[bold]g1-core[/]")
+    ver = version_string()
+    console.rule(f"[bold]g1-core[/] [dim]v{ver}[/]")
+    # Same line in plain log so journalctl tail makes the version obvious.
+    log.info("g1-core version %s", ver)
     console.print(f"  Personality: [cyan]{per.slug}[/] ({per.display_name})")
     console.print(f"  Audio:       [cyan]{settings.audio_output}[/]")
     console.print(f"  Robot:       [cyan]{'enabled' if settings.robot_enabled else 'disabled'}[/] (iface={settings.network_interface})")
@@ -192,11 +221,19 @@ def main() -> int:
     service_registry.register(WatchdogService())
     service_registry.start_all()
 
+    # Keep the active PulseAudio sink awake so the JBL never drops to
+    # standby between utterances (PA suspends idle sinks at 5 s; we poke
+    # every 3 s). Watchdog also calls keepalive on its tick — this thread
+    # makes sure we don't depend on its 15 s cadence for the JBL link.
+    audio_sink.start_keepalive()
+
     _print_banner()
 
-    # Speak the personality intro once at boot — confirms the audio path
-    # from the very first second the service is alive.
-    bus.submit(command_bus.KIND_GREET, source="boot")
+    # Defer the boot greet until BT is online (or after a short timeout).
+    # Without this the very first utterance frequently lands on the chest
+    # speaker because the bluez sink isn't registered with PulseAudio yet
+    # — annoying, even if technically harmless.
+    threading.Thread(target=_submit_boot_greet, name="boot-greet", daemon=True).start()
 
     try:
         while not settings.shutdown:
@@ -214,6 +251,7 @@ def main() -> int:
                 say(outro)
         except Exception:
             pass
+        audio_sink.stop_keepalive()
         service_registry.stop_all()
         robot.stop()
     return 0

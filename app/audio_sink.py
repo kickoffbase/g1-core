@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import Optional
 
 from app.config import settings
@@ -42,6 +42,14 @@ log = logging.getLogger(__name__)
 _applied: Optional[str] = None
 _lock = Lock()
 _pulse_unavailable_logged = False
+
+# PA's `module-suspend-on-idle` parks an idle sink after ~5 s, and a
+# parked bluez_sink means JBL drops to standby (next utterance loses its
+# first phoneme even with preroll). We therefore poke the active sink
+# every few seconds — cheaper than reloading PA modules.
+_KEEPALIVE_INTERVAL_S = 3.0
+_keepalive_thread: Optional[Thread] = None
+_keepalive_stop = Event()
 
 
 def current() -> Optional[str]:
@@ -158,6 +166,34 @@ def _wake_sink_locked(sink: str) -> None:
         )
     except Exception as e:  # never fatal — speaker still plays
         log.debug("audio_sink.wake(%s) failed: %s", sink, e)
+
+
+def start_keepalive() -> None:
+    """Spawn (once) a background thread that nudges the active sink
+    every `_KEEPALIVE_INTERVAL_S` seconds. Must be called once at boot;
+    the thread exits when `_keepalive_stop` is set."""
+    global _keepalive_thread
+    if _keepalive_thread is not None and _keepalive_thread.is_alive():
+        return
+    _keepalive_stop.clear()
+    _keepalive_thread = Thread(
+        target=_keepalive_loop, name="audio-keepalive", daemon=True,
+    )
+    _keepalive_thread.start()
+    log.info("audio_sink: keepalive thread started (every %.1fs)", _KEEPALIVE_INTERVAL_S)
+
+
+def stop_keepalive() -> None:
+    _keepalive_stop.set()
+
+
+def _keepalive_loop() -> None:
+    while not _keepalive_stop.is_set():
+        try:
+            keepalive()
+        except Exception:
+            log.debug("audio_sink._keepalive_loop tick failed", exc_info=True)
+        _keepalive_stop.wait(timeout=_KEEPALIVE_INTERVAL_S)
 
 
 # ── Internals ──────────────────────────────────────────────────────────

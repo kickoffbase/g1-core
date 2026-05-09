@@ -14,9 +14,12 @@ very next utterance, no restart required.
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import logging
+import socket
 import threading
+import time
 from typing import Iterable, Iterator, Optional
 
 from app import personality
@@ -30,6 +33,19 @@ _WS_URL = (
 )
 _CHUNK_SCHEDULE = [50, 120, 200, 290]
 
+# Errno values that almost always mean "network not yet up" / transient.
+# Retrying these once or twice rescues the boot greet from being eaten by
+# a slow DHCP / DNS / route-up race condition.
+_RETRYABLE_ERRNOS = {
+    errno.EHOSTUNREACH,    # 113 — what we saw at boot
+    errno.ENETUNREACH,     # 101
+    errno.ECONNREFUSED,    # 111
+    errno.ETIMEDOUT,       # 110
+    errno.EAGAIN,          # 11
+    getattr(errno, "EPIPE", -1),
+}
+_CONNECT_RETRY_DELAYS = (1.0, 2.0, 4.0)  # 3 attempts total = ~7s wall
+
 _session_error: Optional[str] = None
 _session_error_logged = False
 
@@ -42,6 +58,35 @@ def get_session_error() -> Optional[str]:
     """Non-None means we permanently disabled the API for this run
     (quota / auth) — surfaced via /health for the operator UI."""
     return _session_error
+
+
+def _connect_with_retry(create_connection, *, voice_id: str, model: str, api_key: str):
+    """Open the ElevenLabs WS, retrying transient network errors.
+
+    Boot races (DHCP / DNS not ready yet) used to surface as
+    `OSError: [Errno 113] No route to host` and the boot greet was lost.
+    With ~7s of backoff we ride out almost any cold-start gap without
+    blocking long enough to make systemd think we're stuck."""
+    url = _WS_URL.format(voice_id=voice_id, model=model)
+    headers = [f"xi-api-key: {api_key}"]
+    last_err: Optional[BaseException] = None
+    for attempt, delay in enumerate(_CONNECT_RETRY_DELAYS, start=1):
+        try:
+            return create_connection(url, header=headers, timeout=15)
+        except OSError as e:
+            last_err = e
+            err_no = getattr(e, "errno", None)
+            transient = err_no in _RETRYABLE_ERRNOS or isinstance(e, socket.gaierror)
+            if not transient or attempt == len(_CONNECT_RETRY_DELAYS):
+                raise
+            log.warning("TTS connect attempt %d failed (%s) — retrying in %.1fs",
+                        attempt, e, delay)
+            time.sleep(delay)
+        except Exception:
+            raise
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("TTS connect: unreachable code")
 
 
 def _maybe_record_session_error(msg: str) -> None:
@@ -92,11 +137,7 @@ def stream(text_iter: Iterable[str]) -> Iterator[bytes]:
         "speed": voice.speed if voice.speed is not None else settings.elevenlabs_speed,
     }
 
-    ws = create_connection(
-        _WS_URL.format(voice_id=voice_id, model=model),
-        header=[f"xi-api-key: {api_key}"],
-        timeout=15,
-    )
+    ws = _connect_with_retry(create_connection, voice_id=voice_id, model=model, api_key=api_key)
     try:
         ws.send(json.dumps({
             "text": " ",

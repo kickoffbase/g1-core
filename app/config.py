@@ -59,13 +59,14 @@ class Settings(BaseSettings):
         description="Which sink the speaker prefers when AUDIO_OUTPUT uses 'system' (builtin | jbl)",
     )
     audio_preroll_ms: int = Field(
-        default=250,
+        default=600,
         ge=0,
         le=2000,
         description=(
             "Silence (ms) prepended to every utterance. Bluetooth speakers "
-            "leave standby in 150-300 ms — without preroll the first phoneme "
-            "is eaten ('…ello' instead of 'hello'). 0 disables it."
+            "leave standby in 150-300 ms AND PA buffers ~200 ms on top — so "
+            "anything below ~500 ms still clips the first phoneme. 0 disables "
+            "preroll entirely."
         ),
     )
 

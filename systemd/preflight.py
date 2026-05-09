@@ -182,6 +182,40 @@ def wait_port_free(port: int, attempts: int = 20) -> None:
                 time.sleep(0.25)
 
 
+# ── 5b. Internet readiness ─────────────────────────────────────────────
+
+
+# Hosts we ping to consider the network "ready". Order matters: the first
+# host that succeeds wins. We need at least one of these reachable, or
+# the service races against the network at boot — ElevenLabs rejects with
+# `OSError: [Errno 113] No route to host`, ngrok handshake flaps, etc.
+_NET_PROBES: tuple[tuple[str, int], ...] = (
+    ("api.elevenlabs.io", 443),
+    ("1.1.1.1", 443),
+    ("8.8.8.8", 53),
+)
+
+
+def wait_for_internet(max_seconds: float = 30.0) -> bool:
+    """Block up to `max_seconds` until at least one probe host accepts a
+    TCP connection. Returns True on success, False on timeout (we still
+    let the service start so a degraded boot doesn't loop forever)."""
+    deadline = time.monotonic() + max_seconds
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        for host, port in _NET_PROBES:
+            try:
+                with socket.create_connection((host, port), timeout=2.0):
+                    log(f"network ready (probe {host}:{port} ok, attempt {attempt})")
+                    return True
+            except OSError:
+                continue
+        time.sleep(1.0)
+    log(f"WARN: network not ready after {max_seconds:.0f}s — starting anyway")
+    return False
+
+
 # ── 6. Helpers ─────────────────────────────────────────────────────────
 
 
@@ -217,6 +251,13 @@ def preflight() -> int:
     for p in (port, 4040, 4041):
         free_port(p)
     wait_port_free(port)
+
+    # Wait until the network actually has a route. Without this, the boot
+    # greet, ngrok handshake, and the BT speaker's DNS query all race the
+    # interface coming up, and every one of them logs a scary traceback
+    # before things settle. 30s ceiling is enough for both Ethernet and
+    # WiFi-with-DHCP on the Orin.
+    wait_for_internet(max_seconds=30.0)
 
     if not shutil.which("ngrok"):
         log("WARN: 'ngrok' not in PATH — tunnel will be skipped")
