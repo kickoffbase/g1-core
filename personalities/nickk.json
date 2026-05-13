@@ -11,5 +11,6 @@
     "similarity": 0.8,
     "style": 0.25,
     "speed": 1.1
-  }
+  },
+  "gestures": { "enabled": true, "intensity": "subtle" }
 }

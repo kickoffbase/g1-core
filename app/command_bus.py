@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 KIND_SAY = "SAY"
 KIND_GREET = "GREET"
 KIND_OUTRO = "OUTRO"
+KIND_GESTURE = "GESTURE"
 
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"

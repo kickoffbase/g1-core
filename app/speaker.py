@@ -23,7 +23,7 @@ import threading
 import time
 from typing import Optional
 
-from app import audio_sink, tts
+from app import audio_sink, gestures, tts
 from app.audio import SystemAudioPlayer
 from app.config import settings
 from app.robot import robot
@@ -32,6 +32,12 @@ log = logging.getLogger(__name__)
 
 _PCM_BPS = 32000  # s16le mono 16 kHz = 2 bytes * 16000 Hz
 _lock = threading.Lock()
+# ElevenLabs flash voice averages ~14 chars/s on conversational copy at
+# speed=1.0. Used to estimate utterance duration so the gesture
+# Conductor can place gestures before the line ends instead of trailing
+# into silence. Slightly conservative — the worst-case error is "we
+# don't gesture", never "the gesture lands after speech ends".
+_AVG_CHARS_PER_SEC = 14.0
 
 
 def _audio_mode() -> str:
@@ -107,6 +113,17 @@ def _say_locked(text: str) -> dict:
              text if len(text) <= 80 else text[:77] + "…",
              _audio_mode(), sink_mode or "-", settings.audio_preroll_ms)
     _set_led(255, 255, 255)
+    # Schedule subtle in-speech gestures. Built fresh per utterance so
+    # there's no shared state to corrupt. `start()` is a fast no-op when
+    # gestures are disabled, the arm is unavailable, or the line is too
+    # short — we still always call `stop()` in `finally` to release.
+    conductor = gestures.Conductor()
+    eta_s = max(0.0, len(text) / _AVG_CHARS_PER_SEC + (settings.audio_preroll_ms / 1000.0))
+    try:
+        sched = conductor.start(eta_s)
+        log.info("speak: gesture conductor %s", sched)
+    except Exception:
+        log.debug("Gesture conductor start raised", exc_info=True)
     try:
         for pcm in _with_preroll(tts.stream(_one_chunk(text)), settings.audio_preroll_ms):
             if _uses_unitree() or force_unitree:
@@ -127,6 +144,10 @@ def _say_locked(text: str) -> dict:
     finally:
         if system_player is not None:
             system_player.close()
+        try:
+            conductor.stop()
+        except Exception:
+            log.debug("Gesture conductor stop raised", exc_info=True)
         _set_led(0, 0, 0)
 
     result = {

@@ -56,9 +56,17 @@ class Robot:
         self._reconnect_stop = threading.Event()
         self._audio = None
         self._loco = None
+        # G1ArmActionClient — high-level predefined arm gestures (face_wave,
+        # high_wave, hands_up, clap, …). Optional: failing to init must NOT
+        # take down audio/loco. See app/gestures.py for the safety wrapper.
+        self._arm = None
         self._failed_calls = 0
         self._last_error: Optional[str] = None
         self._last_connect_at: Optional[float] = None
+        # Wallclock of the last locomotion command we issued. Gestures
+        # respect a lockout window after movement so the controller has
+        # time to stabilise before we layer arm motions on top.
+        self._last_move_at: float = 0.0
 
     # ── Public surface ─────────────────────────────────────────────────
 
@@ -90,6 +98,7 @@ class Robot:
         with self._lock:
             self._audio = None
             self._loco = None
+            self._arm = None
             self._state = State.DISCONNECTED if settings.robot_enabled else State.DISABLED
 
     # Robot ops — every one is a no-op when disconnected.
@@ -110,12 +119,49 @@ class Robot:
     def stop_playback(self) -> bool:
         return self._call("PlayStop", lambda c: c.PlayStop("g1_core"), use="audio")
 
+    def arm_execute(self, action_id: int) -> tuple[bool, Optional[int]]:
+        """Execute a predefined Arm Action by id. Returns (sent, sdk_code):
+            sent     — whether we actually reached the SDK at all (False
+                       when arm client is missing or DDS is down).
+            sdk_code — 0 on success, 7301/7302/7303 etc. when the firmware
+                       refuses (e.g. wrong FSM, fall risk). None when sent
+                       is False or the call raised.
+
+        Whitelist enforcement and rate limiting live in `app/gestures.py`."""
+        if self._state != State.CONNECTED or self._arm is None:
+            return False, None
+        try:
+            code = self._arm.ExecuteAction(int(action_id))
+            return True, int(code) if isinstance(code, int) else None
+        except Exception as e:
+            self._on_call_error("ArmExecuteAction", e)
+            return False, None
+
+    @property
+    def arm_available(self) -> bool:
+        return self._state == State.CONNECTED and self._arm is not None
+
+    @property
+    def last_move_at(self) -> float:
+        return self._last_move_at
+
+    def note_movement(self) -> None:
+        """Stamp 'we just told the robot to move'. Gestures honor a
+        lockout window after this so we don't layer arm motion on top
+        of a body that's still recovering balance."""
+        self._last_move_at = time.time()
+
     # ── Internals ──────────────────────────────────────────────────────
 
     def _call(self, op: str, fn: Callable[[Any], Any], use: str) -> bool:
         if self._state != State.CONNECTED:
             return False
-        client = self._audio if use == "audio" else self._loco
+        if use == "audio":
+            client = self._audio
+        elif use == "arm":
+            client = self._arm
+        else:
+            client = self._loco
         if client is None:
             return False
         try:
@@ -132,6 +178,7 @@ class Robot:
             self._state = State.ERROR
             self._audio = None
             self._loco = None
+            self._arm = None
         log.error("Robot op %s failed: %s — scheduling reconnect", op, error)
         self._spawn_reconnect()
 
@@ -169,6 +216,9 @@ class Robot:
 
         if not self._init_audio() or not self._init_loco():
             return
+        # Arm is a soft-optional client — failure to init must NOT block
+        # connect (older firmware ships without the Arm Action service).
+        self._init_arm()
 
         try:
             if self._audio is not None:
@@ -207,6 +257,27 @@ class Robot:
         except Exception as e:
             log.info("Robot: LocoClient unavailable (%s) — audio still works", e)
         return True
+
+    def _init_arm(self) -> None:
+        # G1ArmActionClient lives at unitree_sdk2py.g1.arm.G1ArmActionClient
+        # since the June 2025 SDK release. Older builds don't expose it —
+        # we silently no-op so the rest of the service keeps working and
+        # gestures degrade to "skipped: arm_unavailable".
+        try:
+            from unitree_sdk2py.g1.arm.g1_arm_action_client import G1ArmActionClient
+        except Exception as e:
+            log.info("Robot: G1ArmActionClient module unavailable (%s) — gestures disabled", e)
+            self._arm = None
+            return
+        try:
+            client = G1ArmActionClient()
+            client.SetTimeout(settings.robot_init_timeout_s)
+            client.Init()
+            self._arm = client
+            log.info("Robot: G1ArmActionClient ready — gestures enabled")
+        except Exception as e:
+            log.info("Robot: G1ArmActionClient init failed (%s) — gestures disabled", e)
+            self._arm = None
 
 
 robot = Robot()

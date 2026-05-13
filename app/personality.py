@@ -66,6 +66,24 @@ class VoiceOverrides:
 
 
 @dataclass
+class GestureOverrides:
+    """Per-personality gesture preferences. None = inherit settings.* defaults."""
+    enabled: Optional[bool] = None
+    intensity: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GestureOverrides":
+        if not data:
+            return cls()
+        en = data.get("enabled")
+        intensity = data.get("intensity")
+        return cls(
+            enabled=bool(en) if isinstance(en, bool) else None,
+            intensity=str(intensity).strip().lower() if isinstance(intensity, str) and intensity.strip() else None,
+        )
+
+
+@dataclass
 class Personality:
     slug: str
     display_name: str = ""
@@ -73,6 +91,7 @@ class Personality:
     intro_line: str = ""
     outro_line: str = ""
     voice: VoiceOverrides = field(default_factory=VoiceOverrides)
+    gestures: GestureOverrides = field(default_factory=GestureOverrides)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Personality":
@@ -83,6 +102,7 @@ class Personality:
             intro_line=str(data.get("intro_line") or "").strip(),
             outro_line=str(data.get("outro_line") or "").strip(),
             voice=VoiceOverrides.from_dict(data.get("voice")),
+            gestures=GestureOverrides.from_dict(data.get("gestures")),
         )
 
 

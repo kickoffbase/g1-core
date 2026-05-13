@@ -124,6 +124,43 @@ class Settings(BaseSettings):
     camera_jpeg_quality: int = Field(default=70, ge=1, le=100)
     camera_idle_close_s: int = Field(default=10, ge=0, le=600)
 
+    # ── Gestures ───────────────────────────────────────────────────────
+    # Subtle, randomized arm movements during speech via the high-level
+    # G1ArmActionClient (whitelist only, never low-level joint control).
+    # Per-personality override lives in personalities/<slug>.json under
+    # the optional `"gestures": {...}` block — these are the global
+    # defaults / safety floors.
+    gestures_enabled: bool = Field(
+        default=True,
+        description="Master kill-switch. False here disables ALL gestures regardless of personality.",
+    )
+    gestures_default_intensity: str = Field(
+        default="subtle",
+        description="Fallback intensity when a personality doesn't specify one (subtle | balanced | expressive)",
+    )
+    gestures_min_gap_s_floor: float = Field(
+        default=6.0,
+        ge=2.0,
+        le=60.0,
+        description=(
+            "Hard lower bound on the gap between two gestures. Even if a "
+            "personality picks 'expressive' (4-6s), this floor wins. Stops "
+            "the robot from oscillating into a fall."
+        ),
+    )
+    gestures_min_utterance_s: float = Field(
+        default=4.0,
+        ge=0.0,
+        le=30.0,
+        description="Skip in-speech gestures for utterances shorter than this (seconds).",
+    )
+    gestures_post_move_lockout_s: float = Field(
+        default=5.0,
+        ge=0.0,
+        le=60.0,
+        description="After any locomotion command, block gestures for this many seconds.",
+    )
+
     # ── Watchdog ───────────────────────────────────────────────────────
     watchdog_interval_s: float = Field(default=15.0, description="How often to re-check subsystems")
 
