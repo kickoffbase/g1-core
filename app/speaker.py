@@ -56,7 +56,7 @@ def _uses_system() -> bool:
     return _audio_mode() in {"system", "both"}
 
 
-def say(text: str) -> dict:
+def say(text: str, opening_gesture: Optional[str] = None) -> dict:
     """Speak `text` to whichever sinks are configured.
 
     Returns a small result dict describing how much audio was played and
@@ -69,13 +69,13 @@ def say(text: str) -> dict:
         return {"played_bytes": 0, "error": "ELEVENLABS_API_KEY not set"}
 
     with _lock:
-        return _say_locked(text)
+        return _say_locked(text, opening_gesture=opening_gesture)
 
 
 def speak_personality_intro() -> Optional[dict]:
     from app import personality
     line = personality.get().intro_line
-    return say(line) if line else None
+    return say(line, opening_gesture="face_wave") if line else None
 
 
 def speak_personality_outro() -> Optional[dict]:
@@ -84,7 +84,7 @@ def speak_personality_outro() -> Optional[dict]:
     return say(line) if line else None
 
 
-def _say_locked(text: str) -> dict:
+def _say_locked(text: str, opening_gesture: Optional[str] = None) -> dict:
     system_player: Optional[SystemAudioPlayer] = None
     played_bytes = 0
     started = time.monotonic()
@@ -120,8 +120,16 @@ def _say_locked(text: str) -> dict:
     conductor = gestures.Conductor()
     eta_s = max(0.0, len(text) / _AVG_CHARS_PER_SEC + (settings.audio_preroll_ms / 1000.0))
     try:
-        sched = conductor.start(eta_s)
-        log.info("speak: gesture conductor %s", sched)
+        if opening_gesture:
+            result = gestures.execute(
+                opening_gesture,
+                source="opening_gesture",
+                bypass_rate_limit=True,
+            )
+            log.info("speak: opening gesture %s", result)
+        else:
+            sched = conductor.start(eta_s)
+            log.info("speak: gesture conductor %s", sched)
     except Exception:
         log.debug("Gesture conductor start raised", exc_info=True)
     try:

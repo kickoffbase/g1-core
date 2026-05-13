@@ -118,7 +118,7 @@ class GestureService(Service):
 
             cmd = bus.submit(
                 kind=command_bus.KIND_GESTURE,
-                payload={"action": action},
+                payload={"action": action, "auto_release": True},
                 source=_client_source(x_forwarded_for),
                 command_id=payload.command_id,
             )

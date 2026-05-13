@@ -76,6 +76,7 @@ SAFE_ACTIONS: Dict[str, int] = {
 _ID_TO_NAME: Dict[int, str] = {v: k for k, v in SAFE_ACTIONS.items()}
 
 RELEASE_ARM_ID = 99
+AUTO_RELEASE_DELAY_S = 3.0
 
 
 @dataclass
@@ -99,17 +100,17 @@ INTENSITY_PROFILES: Dict[str, IntensityProfile] = {
     ),
     "balanced": IntensityProfile(
         name="balanced",
-        pool=["face_wave", "right_hand_up", "hands_up", "heart", "right_heart"],
-        min_gap_s=6.0,
-        max_gap_s=10.0,
-        max_per_utterance=2,
+        pool=["face_wave", "right_hand_up"],
+        min_gap_s=10.0,
+        max_gap_s=16.0,
+        max_per_utterance=1,
     ),
     "expressive": IntensityProfile(
         name="expressive",
-        pool=["face_wave", "right_hand_up", "hands_up", "high_wave", "clap", "heart"],
-        min_gap_s=4.0,
-        max_gap_s=8.0,
-        max_per_utterance=3,
+        pool=["face_wave", "right_hand_up"],
+        min_gap_s=8.0,
+        max_gap_s=14.0,
+        max_per_utterance=1,
     ),
 }
 
@@ -160,6 +161,7 @@ _last_at: float = 0.0
 _in_flight: bool = False
 _last_skip_reason: Optional[str] = None
 _last_action: Optional[str] = None
+_release_timer: Optional[threading.Timer] = None
 
 
 def _resolve_action(name_or_id: Union[str, int]) -> Tuple[Optional[str], Optional[int]]:
@@ -213,7 +215,12 @@ def _set_skip(reason: str) -> Dict[str, Any]:
     return {"ok": False, "skipped": reason}
 
 
-def execute(name_or_id: Union[str, int], *, source: str = "api") -> Dict[str, Any]:
+def execute(
+    name_or_id: Union[str, int],
+    *,
+    source: str = "api",
+    bypass_rate_limit: bool = False,
+) -> Dict[str, Any]:
     """Send one whitelisted gesture if every safety gate passes.
 
     Returns `{ok: True, action, id, code}` on success or
@@ -243,7 +250,7 @@ def execute(name_or_id: Union[str, int], *, source: str = "api") -> Dict[str, An
                 return _set_skip("music_playing")
             if _movement_locked_out():
                 return _set_skip("post_move_lockout")
-            if _rate_limited(profile):
+            if not bypass_rate_limit and _rate_limited(profile):
                 return _set_skip("rate_limited")
         _in_flight = True
 
@@ -258,8 +265,10 @@ def execute(name_or_id: Union[str, int], *, source: str = "api") -> Dict[str, An
 
     with _lock:
         _in_flight = False
-        if sent:
+        if sent and action_id != RELEASE_ARM_ID:
             _last_at = time.time()
+            _last_action = name
+        elif sent:
             _last_action = name
 
     if not sent:
@@ -277,6 +286,30 @@ def execute(name_or_id: Union[str, int], *, source: str = "api") -> Dict[str, An
 def release() -> Dict[str, Any]:
     """Best-effort return to neutral. Always safe to call."""
     return execute("release_arm", source="release")
+
+
+def schedule_release(delay_s: float = AUTO_RELEASE_DELAY_S) -> None:
+    """Return arms to neutral after a short hold.
+
+    Manual `/gesture` calls should feel like a single button: run the
+    gesture, hold the pose briefly, then release. We keep this server-side
+    so Robohire doesn't need to coordinate timers over ngrok.
+    """
+    global _release_timer
+    if delay_s <= 0:
+        release()
+        return
+    with _lock:
+        if _release_timer is not None:
+            try:
+                _release_timer.cancel()
+            except Exception:
+                pass
+        timer = threading.Timer(delay_s, release)
+        timer.daemon = True
+        timer.name = "gesture-auto-release"
+        _release_timer = timer
+        timer.start()
 
 
 def list_safe_actions() -> Dict[str, int]:
@@ -383,7 +416,8 @@ class Conductor:
         self._timers.clear()
         # Always best-effort return arms to neutral after a sequence.
         try:
-            release()
+            if self._fired > 0:
+                release()
         except Exception:
             log.debug("Gesture: release() in Conductor.stop raised", exc_info=True)
 

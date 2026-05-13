@@ -155,7 +155,7 @@ def _execute(cmd: command_bus.Command) -> None:
             result = say(text)
         elif cmd.kind == command_bus.KIND_GREET:
             text = personality.get().intro_line or "Hello."
-            result = say(text)
+            result = say(text, opening_gesture="face_wave")
         elif cmd.kind == command_bus.KIND_OUTRO:
             text = personality.get().outro_line or "Goodbye."
             result = say(text)
@@ -165,6 +165,8 @@ def _execute(cmd: command_bus.Command) -> None:
                 bus.mark_failed(cmd, "gesture payload missing 'action'")
                 return
             result = gestures.execute(action, source=cmd.source or "bus")
+            if result.get("ok") and cmd.payload.get("auto_release"):
+                gestures.schedule_release()
         else:
             bus.mark_failed(cmd, f"unknown kind: {cmd.kind}")
             return
