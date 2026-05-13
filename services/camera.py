@@ -55,12 +55,15 @@ except ImportError as e:  # pragma: no cover
     _router_import_error = e
 
 
-# Quality presets selectable from the operator UI. Resolutions higher
-# than `hd` are intentionally not exposed — Vercel proxy caps a single
-# stream at 60s anyway, and 720p over ngrok-free is already pushing it.
+# Quality presets selectable from the operator UI. `hd_plus` improves JPEG
+# quality without increasing resolution; `fhd` is best-effort and depends on
+# the actual camera/driver supporting 1920x1080. Keep FPS conservative so
+# ngrok/Vercel do not turn the operator page into a denial-of-service.
 PRESETS: Dict[str, Dict[str, int]] = {
     "standard": {"width": 640, "height": 480, "fps": 10, "jpeg_quality": 70},
     "hd":       {"width": 1280, "height": 720, "fps": 15, "jpeg_quality": 85},
+    "hd_plus":  {"width": 1280, "height": 720, "fps": 12, "jpeg_quality": 95},
+    "fhd":      {"width": 1920, "height": 1080, "fps": 8, "jpeg_quality": 90},
 }
 
 # OpenCV is the only hard dependency. We don't crash the whole service
@@ -212,7 +215,7 @@ class CameraService(Service):
                 "open": self._cap is not None,
                 "device": str(self._device),
                 "preset": self._preset,
-                "presets": sorted(PRESETS.keys()),
+                "presets": list(PRESETS.keys()),
                 "size": [self._width, self._height],
                 "fps": self._fps,
                 "jpeg_quality": self._jpeg_quality,
@@ -244,7 +247,7 @@ class CameraService(Service):
             with self._lock:
                 return {
                     "preset": self._preset,
-                    "presets": sorted(PRESETS.keys()),
+                    "presets": list(PRESETS.keys()),
                     "current": PRESETS[self._preset],
                 }
 

@@ -50,6 +50,7 @@ except ImportError as e:  # pragma: no cover — only happens on a misconfigured
 class SayPayload(BaseModel):
     text: str
     command_id: Optional[str] = None
+    greeting: bool = False
 
 
 class PersonalityPayload(BaseModel):
@@ -329,7 +330,7 @@ class WebhookService(Service):
                 raise HTTPException(status_code=400, detail="text too long (max 600 chars)")
             cmd = bus.submit(
                 kind=command_bus.KIND_SAY,
-                payload={"text": text},
+                payload={"text": text, "greeting": bool(payload.greeting)},
                 source=_client_source(x_forwarded_for),
                 command_id=payload.command_id,
             )

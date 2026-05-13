@@ -152,7 +152,8 @@ def _execute(cmd: command_bus.Command) -> None:
     try:
         if cmd.kind == command_bus.KIND_SAY:
             text = (cmd.payload.get("text") or "").strip()
-            result = say(text)
+            opening_gesture = "face_wave" if cmd.payload.get("greeting") else None
+            result = say(text, opening_gesture=opening_gesture)
         elif cmd.kind == command_bus.KIND_GREET:
             text = personality.get().intro_line or "Hello."
             result = say(text, opening_gesture="face_wave")

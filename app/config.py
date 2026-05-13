@@ -109,12 +109,12 @@ class Settings(BaseSettings):
     # via CAMERA_DEVICE in .env only if your unit differs. Accepts both
     # an integer V4L2 index ("0", "2") and a path ("/dev/video2").
     #
-    # `camera_preset` ('standard' | 'hd') is the boot-time quality. The
+    # `camera_preset` ('standard' | 'hd' | 'hd_plus' | 'fhd') is the boot-time quality. The
     # operator can flip live from the UI; the choice is not persisted —
     # restart drops back to this value.
     camera_enabled: bool = Field(default=True)
     camera_device: str = Field(default="/dev/video2", description="V4L2 index or /dev path")
-    camera_preset: str = Field(default="standard", description="standard | hd")
+    camera_preset: str = Field(default="standard", description="standard | hd | hd_plus | fhd")
     # Legacy fine-grained knobs — kept so an operator can still pin an
     # exotic resolution without touching code. When camera_preset matches
     # one of the known PRESETS the preset wins.
