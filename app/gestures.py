@@ -89,30 +89,39 @@ class IntensityProfile:
 
 
 # Subtle is the default. Keep `release_arm` out of the random pool —
-# it's an internal cleanup, not a "gesture".
+# it's an internal cleanup, not a "gesture". `max_per_utterance` is the
+# upper bound; the actual number is also capped by `_dynamic_cap()` based
+# on text length so a 4-second hello never gets a 3-gesture salvo.
 INTENSITY_PROFILES: Dict[str, IntensityProfile] = {
     "subtle": IntensityProfile(
         name="subtle",
         pool=["face_wave", "right_hand_up"],
         min_gap_s=8.0,
         max_gap_s=14.0,
-        max_per_utterance=1,
+        max_per_utterance=2,
     ),
     "balanced": IntensityProfile(
         name="balanced",
         pool=["face_wave", "right_hand_up"],
-        min_gap_s=10.0,
-        max_gap_s=16.0,
-        max_per_utterance=1,
+        min_gap_s=6.5,
+        max_gap_s=11.0,
+        max_per_utterance=3,
     ),
     "expressive": IntensityProfile(
         name="expressive",
         pool=["face_wave", "right_hand_up"],
-        min_gap_s=8.0,
-        max_gap_s=14.0,
-        max_per_utterance=1,
+        min_gap_s=6.0,
+        max_gap_s=9.0,
+        max_per_utterance=4,
     ),
 }
+
+# Approximate ElevenLabs flash output rate (chars/s) — keep in sync with
+# `_AVG_CHARS_PER_SEC` in `app/speaker.py`. Used by `preview_schedule()`
+# so the UI can show the same prediction the conductor would make.
+_AVG_CHARS_PER_SEC = 14.0
+# Tail window — see `Conductor.start()` for the rationale.
+_TAIL_S = 2.5
 
 
 def resolve_profile() -> IntensityProfile:
@@ -143,6 +152,56 @@ def is_enabled() -> bool:
     except Exception:
         pass
     return True
+
+
+# Runtime toggle for *in-speech* gestures only. Manual `/gesture` POSTs and
+# the explicit greeting opener still work even when this is off — that's the
+# whole point: an operator can mute talking-hands during a quiet moment
+# without losing the manual buttons. State is in-memory (resets on reboot to
+# `gestures_enabled` so the .env is the durable source of truth).
+_speech_runtime_enabled: bool = True
+
+
+def is_speech_enabled() -> bool:
+    """Whether the conductor should fire gestures during the next utterance.
+
+    The master kill-switch (`is_enabled()`) wins — if the personality or
+    the .env says no, the runtime toggle is irrelevant."""
+    if not is_enabled():
+        return False
+    return _speech_runtime_enabled
+
+
+def set_speech_enabled(enabled: bool) -> bool:
+    """Flip the in-speech toggle. Returns the resolved value (after
+    coercion)."""
+    global _speech_runtime_enabled
+    _speech_runtime_enabled = bool(enabled)
+    log.info("Gesture: speech_enabled=%s", _speech_runtime_enabled)
+    return _speech_runtime_enabled
+
+
+def _dynamic_cap(eta_s: float, profile: IntensityProfile) -> int:
+    """Cap gestures-per-utterance based on how long speech will run.
+
+    The personality's `max_per_utterance` is the ceiling; this function
+    only ever returns a *lower* number. The bands are rough but match
+    how a human talks with their hands:
+        <  4s : silent              (no gesture — too short to land)
+        4-10s: 1 gesture            ("hi, how are you?")
+        10-25s: up to 2 gestures    (a couple of sentences)
+        25s+ : up to 4 gestures     (paragraph-length lines)
+    """
+    if eta_s < settings.gestures_min_utterance_s:
+        return 0
+    cap = profile.max_per_utterance
+    if eta_s < 10.0:
+        return min(1, cap)
+    if eta_s < 25.0:
+        return min(2, cap)
+    if eta_s < 45.0:
+        return min(3, cap)
+    return cap
 
 
 def _gap_bounds(profile: IntensityProfile) -> Tuple[float, float]:
@@ -321,16 +380,63 @@ def status_snapshot() -> Dict[str, Any]:
     lo, hi = _gap_bounds(profile)
     return {
         "enabled": is_enabled(),
+        "speech_enabled": is_speech_enabled(),
         "arm_available": robot.arm_available,
         "intensity": profile.name,
         "pool": list(profile.pool),
         "min_gap_s": lo,
         "max_gap_s": hi,
         "max_per_utterance": profile.max_per_utterance,
+        "min_utterance_s": settings.gestures_min_utterance_s,
+        "avg_chars_per_sec": _AVG_CHARS_PER_SEC,
         "last_at": _last_at,
         "last_action": _last_action,
         "last_skip_reason": _last_skip_reason,
         "in_flight": _in_flight,
+    }
+
+
+def preview_schedule(text_chars: int) -> Dict[str, Any]:
+    """Predict how many gestures the conductor would schedule for a given
+    text length. Pure function — never touches the SDK or state.
+
+    Used by the operator UI to show "your text → ~Xs → Y gestures" before
+    the operator hits Speak. Mirrors the math in `Conductor.start()`."""
+    chars = max(0, int(text_chars))
+    eta_s = chars / _AVG_CHARS_PER_SEC
+    profile = resolve_profile()
+    lo, hi = _gap_bounds(profile)
+    cap = _dynamic_cap(eta_s, profile)
+
+    expected = 0
+    skipped: Optional[str] = None
+    if not is_enabled():
+        skipped = "disabled"
+    elif not _speech_runtime_enabled:
+        skipped = "speech_muted"
+    elif eta_s < settings.gestures_min_utterance_s:
+        skipped = "utterance_too_short"
+    else:
+        usable = max(0.0, eta_s - _TAIL_S)
+        if usable <= lo:
+            skipped = "utterance_too_short"
+        else:
+            avg_gap = (lo + hi) / 2.0
+            # Mean number of slots that fit before `usable`, capped.
+            est = int(((usable - lo) // avg_gap) + 1) if usable >= lo else 0
+            expected = max(0, min(cap, est))
+
+    return {
+        "estimated_duration_s": round(eta_s, 1),
+        "expected_gestures": expected,
+        "cap": cap,
+        "intensity": profile.name,
+        "min_gap_s": lo,
+        "max_gap_s": hi,
+        "min_utterance_s": settings.gestures_min_utterance_s,
+        "speech_enabled": is_speech_enabled(),
+        "enabled": is_enabled(),
+        "skipped": skipped,
     }
 
 
@@ -360,26 +466,32 @@ class Conductor:
     def start(self, estimated_duration_s: float) -> Dict[str, Any]:
         if not is_enabled():
             return {"scheduled": 0, "skipped": "disabled"}
+        if not _speech_runtime_enabled:
+            return {"scheduled": 0, "skipped": "speech_muted"}
         if not robot.connected or not robot.arm_available:
             return {"scheduled": 0, "skipped": "no_arm"}
         if estimated_duration_s < settings.gestures_min_utterance_s:
             return {"scheduled": 0, "skipped": "utterance_too_short"}
 
         profile = resolve_profile()
+        cap = _dynamic_cap(estimated_duration_s, profile)
+        if cap <= 0:
+            return {"scheduled": 0, "skipped": "utterance_too_short"}
+
         lo, hi = _gap_bounds(profile)
         # Reserve a tail window so we don't fire a gesture that finishes
         # *after* speech ends — looks awkward and defeats the lip-sync
         # illusion. Each Arm Action takes ~2-3s to play out.
-        tail_s = 2.5
-        usable = max(0.0, estimated_duration_s - tail_s)
+        usable = max(0.0, estimated_duration_s - _TAIL_S)
         if usable <= lo:
             return {"scheduled": 0, "skipped": "utterance_too_short"}
 
         # Deterministic-ish schedule: lay timers at random points inside
-        # [lo, usable], spaced by at least lo.
+        # [lo, usable], spaced by at least lo. The dynamic cap (above)
+        # caps how many gestures fire in a single utterance.
         slots: List[float] = []
         cursor = random.uniform(lo, min(hi, usable))
-        while cursor <= usable and len(slots) < profile.max_per_utterance:
+        while cursor <= usable and len(slots) < cap:
             slots.append(cursor)
             cursor += random.uniform(lo, hi)
 
@@ -391,7 +503,7 @@ class Conductor:
             timer.start()
             self._timers.append(timer)
 
-        return {"scheduled": len(slots), "intensity": profile.name}
+        return {"scheduled": len(slots), "intensity": profile.name, "cap": cap}
 
     def _fire(self, profile: IntensityProfile) -> None:
         if self._stopped.is_set():
@@ -429,8 +541,12 @@ __all__ = [
     "Conductor",
     "execute",
     "release",
+    "schedule_release",
     "is_enabled",
+    "is_speech_enabled",
+    "set_speech_enabled",
     "resolve_profile",
     "list_safe_actions",
     "status_snapshot",
+    "preview_schedule",
 ]

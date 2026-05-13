@@ -7,11 +7,15 @@ service contract.
 
 Endpoints
 ---------
-    GET  /gesture/list                — whitelist + active intensity profile
-    POST /gesture {action,command_id?} — queue one whitelisted gesture
-    POST /gesture/release             — return arms to neutral (no-op safe)
-    GET  /gesture                     — status snapshot (last action, skip
-                                        reason, arm availability)
+    GET  /gesture/list                  — whitelist + active intensity profile
+    POST /gesture {action,command_id?}  — queue one whitelisted gesture
+    POST /gesture/release               — return arms to neutral (no-op safe)
+    GET  /gesture                       — status snapshot (last action, skip
+                                          reason, arm availability)
+    GET  /gesture/config                — current runtime knobs (speech_enabled)
+    POST /gesture/config {speech_enabled} — toggle in-speech "talking hands"
+    GET  /gesture/preview?chars=N       — predicted plan for an utterance of
+                                          length N chars (used by Robohire UI)
 
 The POST routes go through the command bus so multiple operators don't
 race the SDK; the bus' per-command idempotency means a button mash-tap
@@ -34,9 +38,9 @@ log = logging.getLogger(__name__)
 
 _router_import_error: Optional[Exception] = None
 try:
-    from fastapi import APIRouter, Body, Header, HTTPException
+    from fastapi import APIRouter, Body, Header, HTTPException, Query
 except ImportError as e:  # pragma: no cover
-    APIRouter = Body = Header = HTTPException = None  # type: ignore[assignment]
+    APIRouter = Body = Header = HTTPException = Query = None  # type: ignore[assignment]
     _router_import_error = e
 
 
@@ -46,6 +50,13 @@ class _GesturePayload(BaseModel):
     # module level — we just normalize here for the bus payload.
     action: Union[str, int]
     command_id: Optional[str] = None
+
+
+class _ConfigPayload(BaseModel):
+    """Runtime knobs the operator can flip from the panel without an
+    .env edit + restart. Currently just `speech_enabled`."""
+
+    speech_enabled: Optional[bool] = None
 
 
 def _check_auth(x_api_key: Optional[str]) -> None:
@@ -136,5 +147,36 @@ class GestureService(Service):
             # the operator will mash-tap it; queueing would just delay.
             result = gestures.release()
             return result
+
+        @router.get("/config")
+        def get_config(x_api_key: Optional[str] = Header(default=None)):
+            _check_auth(x_api_key)
+            return {
+                "speech_enabled": gestures.is_speech_enabled(),
+                "master_enabled": bool(settings.gestures_enabled),
+                "personality_enabled": gestures.is_enabled(),
+            }
+
+        @router.post("/config")
+        def set_config(
+            payload: _ConfigPayload = Body(...),
+            x_api_key: Optional[str] = Header(default=None),
+        ):
+            _check_auth(x_api_key)
+            if payload.speech_enabled is not None:
+                gestures.set_speech_enabled(payload.speech_enabled)
+            return {
+                "speech_enabled": gestures.is_speech_enabled(),
+                "master_enabled": bool(settings.gestures_enabled),
+                "personality_enabled": gestures.is_enabled(),
+            }
+
+        @router.get("/preview")
+        def preview(
+            chars: int = Query(0, ge=0, le=2000),
+            x_api_key: Optional[str] = Header(default=None),
+        ):
+            _check_auth(x_api_key)
+            return gestures.preview_schedule(int(chars))
 
         return router
