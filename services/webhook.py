@@ -51,6 +51,11 @@ class SayPayload(BaseModel):
     text: str
     command_id: Optional[str] = None
     greeting: bool = False
+    # Optional whitelisted gesture to fire at utterance start. Validated
+    # downstream by `gestures.execute()` against `SAFE_ACTIONS`; an
+    # unknown name silently degrades to "no opening gesture" so a typo
+    # never blocks speech.
+    opening_gesture: Optional[str] = None
 
 
 class PersonalityPayload(BaseModel):
@@ -328,9 +333,14 @@ class WebhookService(Service):
                 raise HTTPException(status_code=400, detail="text is required")
             if len(text) > 600:
                 raise HTTPException(status_code=400, detail="text too long (max 600 chars)")
+            opening = (payload.opening_gesture or "").strip().lower() or None
             cmd = bus.submit(
                 kind=command_bus.KIND_SAY,
-                payload={"text": text, "greeting": bool(payload.greeting)},
+                payload={
+                    "text": text,
+                    "greeting": bool(payload.greeting),
+                    "opening_gesture": opening,
+                },
                 source=_client_source(x_forwarded_for),
                 command_id=payload.command_id,
             )

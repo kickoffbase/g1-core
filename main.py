@@ -152,7 +152,12 @@ def _execute(cmd: command_bus.Command) -> None:
     try:
         if cmd.kind == command_bus.KIND_SAY:
             text = (cmd.payload.get("text") or "").strip()
-            opening_gesture = "face_wave" if cmd.payload.get("greeting") else None
+            # Explicit `opening_gesture` from payload wins; legacy `greeting=true`
+            # callers (Robohire's "Greet + wave") still get a face_wave for free.
+            explicit = cmd.payload.get("opening_gesture")
+            opening_gesture = (explicit or "").strip() or None
+            if opening_gesture is None and cmd.payload.get("greeting"):
+                opening_gesture = "face_wave"
             result = say(text, opening_gesture=opening_gesture)
         elif cmd.kind == command_bus.KIND_GREET:
             text = personality.get().intro_line or "Hello."
