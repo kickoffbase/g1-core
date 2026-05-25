@@ -7,8 +7,8 @@ service contract.
 
 Endpoints
 ---------
-    GET  /gesture/list                  — whitelist + active intensity profile
-    POST /gesture {action,command_id?}  — queue one whitelisted gesture
+    GET  /gesture/list                  — SDK action map + firmware availability
+    POST /gesture {action,command_id?}  — queue one SDK preset gesture
     POST /gesture/release               — return arms to neutral (no-op safe)
     GET  /gesture                       — status snapshot (last action, skip
                                           reason, arm availability)
@@ -45,8 +45,8 @@ except ImportError as e:  # pragma: no cover
 
 
 class _GesturePayload(BaseModel):
-    # Accept either the whitelisted name ("face_wave") or the numeric id
-    # (25). Anything outside the whitelist is rejected at the gestures
+    # Accept either the SDK action name ("face_wave") or the numeric id
+    # (25). Anything outside the SDK preset map is rejected at the gestures
     # module level — we just normalize here for the bus payload.
     action: Union[str, int]
     command_id: Optional[str] = None
@@ -93,8 +93,11 @@ class GestureService(Service):
         @router.get("/list")
         def list_safe(x_api_key: Optional[str] = Header(default=None)):
             _check_auth(x_api_key)
+            catalog = gestures.action_catalog()
             return {
                 "actions": gestures.list_safe_actions(),
+                "catalog": catalog["actions"],
+                "firmware": catalog["firmware"],
                 "profile": gestures.status_snapshot(),
             }
 

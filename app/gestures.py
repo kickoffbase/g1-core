@@ -7,12 +7,10 @@ through the high-level Arm Action service.
 
 Design constraints
 ------------------
-* **Whitelist only** — `SAFE_ACTIONS` is the closed set of action ids
-  we ever issue. The Unitree SDK exposes a wider list, but several of
-  those (hug=19, kiss=11/12, reject=22) shift the centre of mass enough
-  to risk a fall when the operator hasn't put the robot through a clean
-  StandUp first. We refuse to send anything outside the whitelist, even
-  through the explicit `/gesture` endpoint.
+* **SDK presets only** — `SAFE_ACTIONS` is the closed set of action ids
+  we ever issue, and it mirrors Unitree's built-in SDK action_map.
+  Anything outside that map is still rejected; firmware-only discoveries
+  from `GetActionList()` are shown to operators but not executed by slug.
 * **No low-level joint streaming.** Everything goes through
   `G1ArmActionClient.ExecuteAction` (api id 7106). Worst case: the
   firmware responds with a non-zero code and we treat the gesture as
@@ -45,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -57,20 +56,51 @@ from app.robot import robot
 log = logging.getLogger(__name__)
 
 
-# ── Whitelist ──────────────────────────────────────────────────────────
-# Action ids verified against unitree_sdk2_python's
-# unitree_sdk2py/g1/arm/g1_arm_action_client.py `action_map`.
-SAFE_ACTIONS: Dict[str, int] = {
-    "release_arm":   99,  # always safe — returns arms to neutral
-    "face_wave":     25,  # subtle wave near the face — best "I'm talking" gesture
-    "right_hand_up": 23,  # mild pointing — looks intentional, low CoM impact
-    "hands_up":      15,  # both arms up — for "hype" lines
-    "high_wave":     26,  # bigger wave, used for greetings
-    "clap":          17,  # clap — emphatic punctuation
-    "high_five":     18,  # for crowd interaction (emit on demand only)
-    "heart":         20,  # cute punctuation
-    "right_heart":   21,
+# ── SDK Arm Actions ────────────────────────────────────────────────────
+# Complete preset map from unitree_sdk2py.g1.arm.g1_arm_action_client
+# `action_map`. Manual `/gesture` calls may use any of these IDs/slugs;
+# automatic in-speech gestures still use the conservative profile pools below.
+SDK_ACTIONS: Dict[str, int] = {
+    "two_hand_kiss": 11,
+    "left_kiss": 12,
+    "right_kiss": 13,
+    "hands_up": 15,
+    "clap": 17,
+    "high_five": 18,
+    "hug": 19,
+    "heart": 20,
+    "right_heart": 21,
+    "reject": 22,
+    "right_hand_up": 23,
+    "x_ray": 24,
+    "face_wave": 25,
+    "high_wave": 26,
+    "shake_hand": 27,
+    "release_arm": 99,
 }
+
+ACTION_DESCRIPTIONS: Dict[str, str] = {
+    "two_hand_kiss": "Two-hand air kiss",
+    "left_kiss": "Left-hand air kiss",
+    "right_kiss": "Right-hand air kiss",
+    "hands_up": "Both hands up",
+    "clap": "Clap",
+    "high_five": "High five",
+    "hug": "Hug / arms forward",
+    "heart": "Two-hand heart",
+    "right_heart": "Right-hand heart",
+    "reject": "Crossed-arms reject",
+    "right_hand_up": "Right hand up",
+    "x_ray": "X-ray / Ultraman pose",
+    "face_wave": "Wave near face",
+    "high_wave": "High wave",
+    "shake_hand": "Handshake",
+    "release_arm": "Release arms to neutral",
+}
+
+# Backwards-compatible name used by the service layer.
+SAFE_ACTIONS = SDK_ACTIONS
+_ACTION_ORDER = list(SDK_ACTIONS.keys())
 
 # Reverse lookup for `/gesture` when callers pass an integer id.
 _ID_TO_NAME: Dict[int, str] = {v: k for k, v in SAFE_ACTIONS.items()}
@@ -375,6 +405,83 @@ def list_safe_actions() -> Dict[str, int]:
     return dict(SAFE_ACTIONS)
 
 
+def _jsonish(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonish(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonish(v) for k, v in value.items()}
+    return repr(value)
+
+
+def _extract_action_ids(value: Any) -> List[int]:
+    found: set[int] = set()
+
+    def walk(item: Any) -> None:
+        if isinstance(item, bool) or item is None:
+            return
+        if isinstance(item, int):
+            if 0 <= item <= 999:
+                found.add(item)
+            return
+        if isinstance(item, str):
+            for match in re.findall(r"\b\d{1,3}\b", item):
+                found.add(int(match))
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                walk(key)
+                walk(child)
+            return
+        if isinstance(item, (list, tuple, set)):
+            for child in item:
+                walk(child)
+
+    walk(value)
+    return sorted(found)
+
+
+def action_catalog() -> Dict[str, Any]:
+    """SDK catalog plus best-effort firmware availability from GetActionList."""
+    sent, code, raw = robot.arm_action_list()
+    firmware_ids = _extract_action_ids(raw) if sent and raw is not None else []
+    firmware_set = set(firmware_ids)
+
+    actions: List[Dict[str, Any]] = []
+    for name in _ACTION_ORDER:
+        action_id = SAFE_ACTIONS[name]
+        actions.append({
+            "name": name,
+            "id": action_id,
+            "description": ACTION_DESCRIPTIONS.get(name, name.replace("_", " ")),
+            "source": "sdk",
+            "available": action_id in firmware_set if firmware_ids else None,
+        })
+
+    known_ids = set(SAFE_ACTIONS.values())
+    for action_id in firmware_ids:
+        if action_id in known_ids:
+            continue
+        actions.append({
+            "name": f"firmware_action_{action_id}",
+            "id": action_id,
+            "description": "Advertised by robot firmware, not present in SDK action_map",
+            "source": "firmware",
+            "available": True,
+        })
+
+    return {
+        "actions": actions,
+        "firmware": {
+            "ok": bool(sent),
+            "code": code,
+            "action_ids": firmware_ids,
+            "raw": _jsonish(raw),
+        },
+    }
+
+
 def status_snapshot() -> Dict[str, Any]:
     profile = resolve_profile()
     lo, hi = _gap_bounds(profile)
@@ -536,6 +643,8 @@ class Conductor:
 
 __all__ = [
     "SAFE_ACTIONS",
+    "SDK_ACTIONS",
+    "ACTION_DESCRIPTIONS",
     "RELEASE_ARM_ID",
     "INTENSITY_PROFILES",
     "Conductor",
@@ -547,6 +656,7 @@ __all__ = [
     "set_speech_enabled",
     "resolve_profile",
     "list_safe_actions",
+    "action_catalog",
     "status_snapshot",
     "preview_schedule",
 ]

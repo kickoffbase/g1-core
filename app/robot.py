@@ -137,6 +137,21 @@ class Robot:
             self._on_call_error("ArmExecuteAction", e)
             return False, None
 
+    def arm_action_list(self) -> tuple[bool, Optional[int], Any]:
+        """Return the firmware-advertised Arm Action list, if available."""
+        if self._state != State.CONNECTED or self._arm is None:
+            return False, None, None
+        try:
+            result = self._arm.GetActionList()
+            if isinstance(result, tuple):
+                code = result[0] if len(result) > 0 else None
+                data = result[1] if len(result) > 1 else None
+                return True, int(code) if isinstance(code, int) else None, data
+            return True, None, result
+        except Exception as e:
+            log.warning("Robot: ArmGetActionList failed (%s)", e)
+            return False, None, None
+
     @property
     def arm_available(self) -> bool:
         return self._state == State.CONNECTED and self._arm is not None
