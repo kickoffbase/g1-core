@@ -93,6 +93,8 @@ def _fire_opening_gesture(slug: str) -> None:
             bypass_rate_limit=True,
         )
         log.info("speak: opening gesture %s", result)
+        if result.get("ok"):
+            gestures.schedule_release()
     except Exception:
         log.debug("opening gesture raised", exc_info=True)
 
@@ -171,6 +173,12 @@ def _say_locked(text: str, opening_gesture: Optional[str] = None) -> dict:
             conductor.stop()
         except Exception:
             log.debug("Gesture conductor stop raised", exc_info=True)
+        if opening_gesture:
+            try:
+                # Hold through the line, then return to neutral (same as /gesture).
+                gestures.schedule_release()
+            except Exception:
+                log.debug("opening gesture post-speak release raised", exc_info=True)
         _set_led(0, 0, 0)
 
     result = {
