@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # Default slug at boot. The active slug is persisted in `state/active_personality`
     # so a webhook switch survives restart.
     personality: str = Field(default="comedian")
+    supabase_url: str = Field(default="", description="Supabase project URL for robot_personalities")
+    supabase_service_role_key: str = Field(default="", description="Service-role key used by g1-core only")
+    supabase_robot_id: str = Field(default="", description="robots.id for this physical robot")
+    supabase_timeout_s: float = Field(default=2.0, ge=0.2, le=10.0)
 
     # ── Webhook ────────────────────────────────────────────────────────
     webhook_host: str = Field(default="0.0.0.0")

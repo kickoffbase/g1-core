@@ -32,6 +32,9 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.error import URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from app.config import REPO_ROOT, settings
 
@@ -105,6 +108,27 @@ class Personality:
             gestures=GestureOverrides.from_dict(data.get("gestures")),
         )
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "slug": self.slug,
+            "display_name": self.display_name,
+            "description": self.description,
+            "intro_line": self.intro_line,
+            "outro_line": self.outro_line,
+            "voice": {
+                "voice_id": self.voice.voice_id,
+                "model": self.voice.model,
+                "stability": self.voice.stability,
+                "similarity": self.voice.similarity,
+                "style": self.voice.style,
+                "speed": self.voice.speed,
+            },
+            "gestures": {
+                "enabled": self.gestures.enabled,
+                "intensity": self.gestures.intensity,
+            },
+        }
+
 
 _BUILTIN_FALLBACK = Personality(
     slug="comedian",
@@ -117,9 +141,37 @@ _BUILTIN_FALLBACK = Personality(
 
 _active: Optional[Personality] = None
 _change_listeners: List["callable[[Personality], None]"] = []
+_db_config_warning_logged = False
 
 
 def list_available() -> List[str]:
+    """Sorted slugs of personalities present in DB, falling back to disk."""
+    db_rows = _fetch_db_personalities(fields="slug")
+    if db_rows:
+        return sorted({str(row.get("slug") or "").strip() for row in db_rows if row.get("slug")})
+    if db_rows == []:
+        log.warning("No enabled DB personalities for robot %s — using local fallback", settings.supabase_robot_id)
+    return _list_disk_available()
+
+
+def list_details() -> List[Dict[str, Any]]:
+    """Personality metadata for control UIs. Best-effort DB, then disk."""
+    db_rows = _fetch_db_personalities()
+    if db_rows:
+        out: List[Dict[str, Any]] = []
+        for row in db_rows:
+            try:
+                out.append(Personality.from_dict(row).to_dict())
+            except Exception as e:
+                log.warning("Skipping broken DB personality row %s: %s", row.get("slug"), e)
+        if out:
+            return out
+    if db_rows == []:
+        log.warning("No enabled DB personality details for robot %s — using local fallback", settings.supabase_robot_id)
+    return [_load_disk(slug).to_dict() for slug in _list_disk_available()]
+
+
+def _list_disk_available() -> List[str]:
     """Sorted slugs of personalities present on disk."""
     if not _DIR.is_dir():
         return [_BUILTIN_FALLBACK.slug]
@@ -158,6 +210,13 @@ def on_change(callback) -> None:
 
 
 def _load(slug: str) -> Personality:
+    db_persona = _load_db(slug)
+    if db_persona is not None:
+        return db_persona
+    return _load_disk(slug)
+
+
+def _load_disk(slug: str) -> Personality:
     path = _DIR / f"{slug}.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -183,11 +242,69 @@ def _load_persisted_slug() -> Optional[str]:
     try:
         if _STATE_FILE.is_file():
             slug = _STATE_FILE.read_text(encoding="utf-8").strip()
-            if slug and (Path(_DIR / f"{slug}.json").is_file() or slug == _BUILTIN_FALLBACK.slug):
+            if slug:
                 return slug
     except Exception as e:
         log.warning("Could not read persisted personality: %s", e)
     return None
+
+
+def _load_db(slug: str) -> Optional[Personality]:
+    rows = _fetch_db_personalities(slug=slug)
+    if not rows:
+        if rows == []:
+            log.warning("Personality '%s' not found in DB — using local fallback", slug)
+        return None
+    try:
+        return Personality.from_dict(rows[0])
+    except Exception as e:
+        log.error("Personality '%s' DB row broken (%s) — using local fallback", slug, e)
+        return None
+
+
+def _fetch_db_personalities(
+    slug: Optional[str] = None,
+    fields: str = "slug,display_name,description,intro_line,outro_line,voice,gestures",
+) -> Optional[List[Dict[str, Any]]]:
+    global _db_config_warning_logged
+
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_service_role_key
+    robot_id = settings.supabase_robot_id.strip()
+    if not base or not key or not robot_id:
+        if not _db_config_warning_logged:
+            log.warning("Supabase personality config incomplete — using local JSON fallback")
+            _db_config_warning_logged = True
+        return None
+
+    params = {
+        "select": fields,
+        "robot_id": f"eq.{robot_id}",
+        "is_enabled": "eq.true",
+        "order": "slug.asc",
+    }
+    if slug is not None:
+        params["slug"] = f"eq.{slug.strip()}"
+        params["limit"] = "1"
+    url = f"{base}/rest/v1/robot_personalities?{urlencode(params)}"
+    req = Request(
+        url,
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urlopen(req, timeout=settings.supabase_timeout_s) as res:
+            raw = res.read().decode("utf-8")
+        data = json.loads(raw or "[]")
+        if not isinstance(data, list):
+            raise ValueError("expected list response")
+        return data
+    except (OSError, URLError, json.JSONDecodeError, ValueError) as e:
+        log.warning("Supabase personalities unavailable (%s) — using local JSON fallback", e)
+        return None
 
 
 def _opt_float(v: Any) -> Optional[float]:

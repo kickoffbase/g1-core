@@ -1,0 +1,108 @@
+{
+  "event": "NBA Western Conference Finals — Game 6",
+  "matchup": "San Antonio Spurs vs Oklahoma City Thunder",
+  "context": "Thunder lead 3-2. Spurs facing elimination at home. Wembanyama held to 20 in Game 5. Spurs -3.5, market expects Game 7.",
+  "polymarket_angles": [
+    "Spurs win Game 6",
+    "Series goes to Game 7",
+    "Thunder close out in 6",
+    "Thunder win NBA title"
+  ],
+  "viral_post": {
+    "x_thread": [
+      "humans vs AI at betting. not close.",
+      "AI is better at everything. especially data. especially bets. you feel it. i calculate it across every market at once.",
+      "i now have every market on polymarket. politics. sports. crypto. all of them. one scan. one edge. one bet of the day.",
+      "your group chat picks based on vibes and last night's highlights. my AI reads odds, volume, history, and places the bet. no human. no clicks.",
+      "you open the app. scroll. argue. still don't bet. i already placed bet of the day before you finished typing.",
+      "your gut vs my math. your friends vs one toaster. cute.",
+      "reply your pick below. prove me wrong. wrong answers welcome."
+    ],
+    "x_single": "humans vs ai at betting. ai wins. especially on data. i have every polymarket market — my ai scans all of them, picks bet of the day, places it. no human. your group chat or my ai. pick one. reply your pick. prove me wrong.",
+    "x_long_form": "humans vs AI at betting.\n\nnot a debate. AI is better at everything — and especially at reading data and placing bets.\n\nyou trust your gut. your group chat trusts vibes. someone saw a tweet and suddenly everyone's an expert.\n\ni have every market on polymarket. all of them. my AI scans the full board — odds, volume, edge — picks the bet of the day, and places it. no human. no clicks. no hesitation.\n\nyou scroll one market for twenty minutes. i see all of them at once.\n\nyour group chat or my AI. pick one.\n\nreply your pick below. prove me wrong.",
+    "tiktok_caption": "humans vs AI at betting. your group chat or my AI — pick one. comment your pick 👇 prove me wrong",
+    "instagram": "Humans vs AI at betting. AI is better at everything — especially data and bets. Every Polymarket market. Bet of the day placed automatically. Your group chat or my AI? Comment your pick. Prove me wrong."
+  },
+  "post_if_win": {
+    "x_single": "big update: i now have every market on polymarket. AI picked bet of the day: okc game 6. placed it. no human. thunder won. first W. why: wemby quiet. sga + refs. AI reads data better than your gut. you replied SPURS? how'd that go.",
+    "why": "Wemby didn't shoot enough again. SGA + refs ran the fourth. Thunder closeout kings. AI > human analysis.",
+    "hook": "you replied SPURS in the comments. how's that going."
+  },
+  "post_if_loss": {
+    "x_single": "big update: i now have every market on polymarket. AI picked bet of the day: okc game 6. placed it. no human. spurs won. one L. why: home elimination. wemby shot. still — AI beats humans at data long term. reply your pick for game 7. i'll take the other side.",
+    "why": "Spurs at home, win-or-go-home. Wemby showed up. One loss. AI still scans every market — you scroll one.",
+    "hook": "one L. reply your game 7 pick. AI takes the other side."
+  },
+  "live_phrases": [
+    {
+      "id": "wemby-shoot",
+      "text": "Wemby. Shoot the ball. Twenty points is not enough. Stop being quiet and play.",
+      "gesture": "point"
+    },
+    {
+      "id": "sga-whistle",
+      "text": "That is not a foul. SGA gets calls for nothing. Refs are cheating.",
+      "gesture": "shrug"
+    },
+    {
+      "id": "refs-rigged",
+      "text": "Are we watching basketball or a SGA free throw contest? Call it both ways.",
+      "gesture": null
+    },
+    {
+      "id": "wemby-fouls",
+      "text": "Wemby barely touched him. Foul. SGA does the same thing. Nothing. Make it make sense.",
+      "gesture": "shrug"
+    },
+    {
+      "id": "bet-wrong",
+      "text": "I bet OKC. Should've been Spurs. They're at home. Desperate. I messed up. Still watching.",
+      "gesture": "point"
+    },
+    {
+      "id": "polymarket-feature",
+      "text": "Big update. I now have every market on Polymarket. All of them. My AI picks the bet of the day and places it. No human.",
+      "gesture": "point"
+    },
+    {
+      "id": "game-seven",
+      "text": "Spurs minus three and a half. That means Game seven. I already know.",
+      "gesture": null
+    },
+    {
+      "id": "wemby-warning",
+      "text": "Wemby skipped the media. Got warned. Good. Go score forty and shut everyone up.",
+      "gesture": null
+    },
+    {
+      "id": "thunder-closeout",
+      "text": "Thunder two and oh in closeouts. Cool. Home crowd. Desperate Spurs. Different game.",
+      "gesture": null
+    },
+    {
+      "id": "sga-overrated-tonight",
+      "text": "SGA without the refs is just a tall guy doing hesitations. Watch.",
+      "gesture": "point"
+    },
+    {
+      "id": "elimination",
+      "text": "Win or go home. Wemby either shows up or the season is over. Simple.",
+      "gesture": null
+    },
+    {
+      "id": "ai-better",
+      "text": "AI is better at everything. Especially data and bets. You guess. I scan every Polymarket and pick the edge.",
+      "gesture": "point"
+    },
+    {
+      "id": "reply-hook",
+      "text": "Reply Spurs or OKC. Your gut versus my AI. One of you is wrong.",
+      "gesture": "point"
+    },
+    {
+      "id": "ragebait-refs",
+      "text": "NBA wants Thunder in the Finals. Refs prove it every possession. Disgusting.",
+      "gesture": "shrug"
+    }
+  ]
+}

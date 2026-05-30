@@ -399,7 +399,12 @@ class WebhookService(Service):
         @app.get("/control/personalities")
         def list_personalities(x_api_key: Optional[str] = Header(default=None)):
             _check_auth(x_api_key)
-            return {"active": personality.get().slug, "available": personality.list_available()}
+            items = personality.list_details()
+            return {
+                "active": personality.get().slug,
+                "available": [p["slug"] for p in items],
+                "personalities": items,
+            }
 
         @app.post("/control/personality")
         def set_personality(
