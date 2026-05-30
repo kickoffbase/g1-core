@@ -80,14 +80,10 @@ SDK_ACTIONS: Dict[str, int] = {
 }
 
 AUTO_SPEECH_SAFE_ACTIONS = frozenset({"face_wave", "right_hand_up"})
-MANUAL_SAFE_ACTIONS = frozenset({
-    "face_wave",
-    "right_hand_up",
-    "left_kiss",
-    "right_kiss",
-    "release_arm",
-})
-MANUAL_RESTRICTED_ACTIONS = frozenset(SDK_ACTIONS) - MANUAL_SAFE_ACTIONS
+# Manual/operator actions are explicit choices from the UI, so allow the full
+# vetted SDK whitelist. Automatic talking-hands remains conservative above.
+MANUAL_SAFE_ACTIONS = frozenset(SDK_ACTIONS)
+MANUAL_RESTRICTED_ACTIONS = frozenset()
 
 ACTION_DESCRIPTIONS: Dict[str, str] = {
     "two_hand_kiss": "Two-hand air kiss",
@@ -356,6 +352,7 @@ def _firmware_reject_cooldown() -> bool:
 def _set_skip(reason: str) -> Dict[str, Any]:
     global _last_skip_reason
     _last_skip_reason = reason
+    log.info("Gesture: skipped %s", reason)
     return {"ok": False, "skipped": reason}
 
 
