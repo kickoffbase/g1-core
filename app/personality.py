@@ -42,6 +42,7 @@ log = logging.getLogger(__name__)
 
 _DIR = REPO_ROOT / "personalities"
 _STATE_FILE = REPO_ROOT / "state" / "active_personality"
+_FALLBACK_STATE_FILE = Path.home() / ".local" / "state" / "g1-core" / "active_personality"
 _lock = threading.RLock()
 
 
@@ -231,21 +232,26 @@ def _load_disk(slug: str) -> Personality:
 
 
 def _persist_slug(slug: str) -> None:
-    try:
-        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _STATE_FILE.write_text(slug.strip() + "\n", encoding="utf-8")
-    except Exception as e:
-        log.warning("Could not persist active personality (%s): %s", slug, e)
+    for path in (_STATE_FILE, _FALLBACK_STATE_FILE):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(slug.strip() + "\n", encoding="utf-8")
+            if path != _STATE_FILE:
+                log.warning("Persisted active personality to fallback state file: %s", path)
+            return
+        except Exception as e:
+            log.warning("Could not persist active personality to %s (%s): %s", path, slug, e)
 
 
 def _load_persisted_slug() -> Optional[str]:
-    try:
-        if _STATE_FILE.is_file():
-            slug = _STATE_FILE.read_text(encoding="utf-8").strip()
-            if slug:
-                return slug
-    except Exception as e:
-        log.warning("Could not read persisted personality: %s", e)
+    for path in (_STATE_FILE, _FALLBACK_STATE_FILE):
+        try:
+            if path.is_file():
+                slug = path.read_text(encoding="utf-8").strip()
+                if slug:
+                    return slug
+        except Exception as e:
+            log.warning("Could not read persisted personality from %s: %s", path, e)
     return None
 
 

@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 from app.config import settings
@@ -86,6 +87,10 @@ class _PresetPayload(BaseModel):
     preset: str
 
 
+class _DevicePayload(BaseModel):
+    device: str
+
+
 def _check_auth(x_api_key: Optional[str]) -> None:
     if not settings.webhook_api_key:
         return
@@ -121,7 +126,8 @@ class CameraService(Service):
 
     def __init__(self) -> None:
         self._enabled = settings.camera_enabled
-        self._device = _resolve_device(settings.camera_device)
+        self._device_raw = (settings.camera_device or "0").strip() or "0"
+        self._device = _resolve_device(self._device_raw)
         self._idle_close_s = settings.camera_idle_close_s
         self._preset = _initial_preset()
         self._apply_preset_unlocked()
@@ -185,6 +191,23 @@ class CameraService(Service):
             "jpeg_quality": self._jpeg_quality,
         }
 
+    def _set_device(self, raw: str) -> Dict[str, Any]:
+        raw = (raw or "").strip()
+        if not raw:
+            raise HTTPException(status_code=400, detail="device is required")
+        with self._lock:
+            if raw == self._device_raw and self._cap is not None:
+                return {"device": self._device_raw, "changed": False}
+            self._device_raw = raw
+            self._device = _resolve_device(raw)
+            had_open_cap = self._cap is not None
+            if had_open_cap:
+                self._close_capture_unlocked(reason=f"device → {raw}")
+                if self._subscribers > 0:
+                    self._open_capture_unlocked()
+        log.info("camera: device switched → %s", raw)
+        return {"device": raw, "changed": True}
+
     # ── Service API ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -213,7 +236,7 @@ class CameraService(Service):
                 "enabled": self._enabled,
                 "available": _cv2_import_error is None,
                 "open": self._cap is not None,
-                "device": str(self._device),
+                "device": self._device_raw,
                 "preset": self._preset,
                 "presets": list(PRESETS.keys()),
                 "size": [self._width, self._height],
@@ -259,6 +282,24 @@ class CameraService(Service):
             _check_auth(x_api_key)
             return self._set_preset(payload.preset)
 
+        @router.get("/devices")
+        def devices(x_api_key: Optional[str] = Header(default=None)):
+            _check_auth(x_api_key)
+            self._require_available()
+            return {
+                "current": self._device_raw,
+                "devices": self._discover_devices(),
+            }
+
+        @router.post("/device")
+        def set_device(
+            payload: _DevicePayload = Body(...),
+            x_api_key: Optional[str] = Header(default=None),
+        ):
+            _check_auth(x_api_key)
+            self._require_available()
+            return self._set_device(payload.device)
+
         @router.get("/snapshot.jpg")
         def snapshot(x_api_key: Optional[str] = Header(default=None)):
             _check_auth(x_api_key)
@@ -300,6 +341,55 @@ class CameraService(Service):
                 status_code=501,
                 detail=f"opencv not installed: {_cv2_import_error}",
             )
+
+    def _discover_devices(self) -> list[Dict[str, Any]]:
+        if cv2 is None:
+            return []
+        candidates = {self._device_raw}
+        candidates.update(str(p) for p in sorted(Path("/dev").glob("video*")))
+        # Numeric indexes are useful on non-/dev OpenCV backends and as a
+        # fallback if /dev is hidden by permissions.
+        candidates.update(str(i) for i in range(0, 6))
+        out: list[Dict[str, Any]] = []
+        for raw in sorted(candidates):
+            if not raw:
+                continue
+            cap = None
+            try:
+                cap = cv2.VideoCapture(_resolve_device(raw))
+                ok = bool(cap is not None and cap.isOpened())
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) if ok else None
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) if ok else None
+                fps = cap.get(cv2.CAP_PROP_FPS) if ok else None
+                out.append({
+                    "device": raw,
+                    "available": ok,
+                    "current": raw == self._device_raw,
+                    "size": [width, height] if width and height else None,
+                    "fps": round(float(fps), 1) if fps else None,
+                })
+            except Exception as e:
+                out.append({
+                    "device": raw,
+                    "available": False,
+                    "current": raw == self._device_raw,
+                    "error": str(e)[:160],
+                })
+            finally:
+                try:
+                    if cap is not None:
+                        cap.release()
+                except Exception:
+                    pass
+        # Put working devices first, current device at the top within that.
+        return sorted(
+            out,
+            key=lambda d: (
+                not bool(d.get("available")),
+                not bool(d.get("current")),
+                str(d.get("device")),
+            ),
+        )
 
     def _capture_one_shot(self) -> Optional[bytes]:
         """Best-effort single-frame capture without bumping the subscriber

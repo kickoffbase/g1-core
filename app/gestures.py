@@ -79,6 +79,16 @@ SDK_ACTIONS: Dict[str, int] = {
     "release_arm": 99,
 }
 
+AUTO_SPEECH_SAFE_ACTIONS = frozenset({"face_wave", "right_hand_up"})
+MANUAL_SAFE_ACTIONS = frozenset({
+    "face_wave",
+    "right_hand_up",
+    "left_kiss",
+    "right_kiss",
+    "release_arm",
+})
+MANUAL_RESTRICTED_ACTIONS = frozenset(SDK_ACTIONS) - MANUAL_SAFE_ACTIONS
+
 ACTION_DESCRIPTIONS: Dict[str, str] = {
     "two_hand_kiss": "Two-hand air kiss",
     "left_kiss": "Left-hand air kiss",
@@ -190,6 +200,7 @@ def is_enabled() -> bool:
 # without losing the manual buttons. State is in-memory (resets on reboot to
 # `gestures_enabled` so the .env is the durable source of truth).
 _speech_runtime_enabled: bool = True
+_manual_restricted_enabled: bool = False
 
 
 def is_speech_enabled() -> bool:
@@ -209,6 +220,45 @@ def set_speech_enabled(enabled: bool) -> bool:
     _speech_runtime_enabled = bool(enabled)
     log.info("Gesture: speech_enabled=%s", _speech_runtime_enabled)
     return _speech_runtime_enabled
+
+
+def is_manual_restricted_enabled() -> bool:
+    return _manual_restricted_enabled
+
+
+def set_manual_restricted_enabled(enabled: bool) -> bool:
+    """Allow stronger SDK presets for manual admin-only buttons.
+
+    Automatic speech gestures never use this; they stay on
+    AUTO_SPEECH_SAFE_ACTIONS regardless of the runtime toggle.
+    """
+    global _manual_restricted_enabled
+    _manual_restricted_enabled = bool(enabled)
+    log.info("Gesture: manual_restricted_enabled=%s", _manual_restricted_enabled)
+    return _manual_restricted_enabled
+
+
+def action_group(name: str) -> str:
+    key = name.strip().lower().replace("-", "_").replace(" ", "_")
+    if key == "release_arm":
+        return "safety"
+    if key in AUTO_SPEECH_SAFE_ACTIONS:
+        return "auto_speech_safe"
+    if key in MANUAL_SAFE_ACTIONS:
+        return "manual_safe"
+    if key in MANUAL_RESTRICTED_ACTIONS:
+        return "manual_restricted"
+    return "unknown"
+
+
+def policy_snapshot() -> Dict[str, Any]:
+    return {
+        "auto_speech_safe": sorted(AUTO_SPEECH_SAFE_ACTIONS),
+        "manual_safe": sorted(MANUAL_SAFE_ACTIONS - {"release_arm"}),
+        "manual_restricted": sorted(MANUAL_RESTRICTED_ACTIONS),
+        "manual_restricted_enabled": _manual_restricted_enabled,
+        "always_allowed": ["release_arm"],
+    }
 
 
 def _dynamic_cap(eta_s: float, profile: IntensityProfile) -> int:
@@ -251,6 +301,7 @@ _in_flight: bool = False
 _last_skip_reason: Optional[str] = None
 _last_action: Optional[str] = None
 _release_timer: Optional[threading.Timer] = None
+_firmware_reject_until: float = 0.0
 
 
 def _resolve_action(name_or_id: Union[str, int]) -> Tuple[Optional[str], Optional[int]]:
@@ -298,6 +349,10 @@ def _rate_limited(profile: IntensityProfile) -> bool:
     return (time.time() - _last_at) < gap
 
 
+def _firmware_reject_cooldown() -> bool:
+    return time.time() < _firmware_reject_until
+
+
 def _set_skip(reason: str) -> Dict[str, Any]:
     global _last_skip_reason
     _last_skip_reason = reason
@@ -315,16 +370,23 @@ def execute(
     Returns `{ok: True, action, id, code}` on success or
             `{ok: False, skipped: <reason>}` otherwise.
     Never raises. `source` is only used for logs."""
-    global _last_at, _in_flight, _last_action
+    global _last_at, _in_flight, _last_action, _firmware_reject_until
 
     name, action_id = _resolve_action(name_or_id)
     if name is None or action_id is None:
         return _set_skip("not_in_whitelist")
+    if (
+        action_id != RELEASE_ARM_ID
+        and name in MANUAL_RESTRICTED_ACTIONS
+        and source != "conductor"
+        and not _manual_restricted_enabled
+    ):
+        return _set_skip("manual_restricted_disabled")
 
     profile = resolve_profile()
 
     with _lock:
-        if not is_enabled():
+        if action_id != RELEASE_ARM_ID and not is_enabled():
             return _set_skip("disabled")
         if not robot.connected:
             return _set_skip("robot_disconnected")
@@ -335,6 +397,8 @@ def execute(
         # release_arm bypasses rate limit & music/movement gates — it's a
         # safety op, not a "talking" gesture.
         if action_id != RELEASE_ARM_ID:
+            if source == "conductor" and _firmware_reject_cooldown():
+                return _set_skip("firmware_reject_cooldown")
             if _music_playing():
                 return _set_skip("music_playing")
             if _movement_locked_out():
@@ -366,6 +430,8 @@ def execute(
     if isinstance(code, int) and code != 0:
         # Firmware-level rejection — most often FSM mismatch (the
         # operator left the robot in damp / sit). Don't keep retrying.
+        if source == "conductor":
+            _firmware_reject_until = time.time() + 30.0
         log.warning("Gesture: firmware rejected %s with code=%s", name, code)
         return {"ok": False, "skipped": "firmware_rejected", "action": name, "id": action_id, "code": code}
 
@@ -456,6 +522,7 @@ def action_catalog() -> Dict[str, Any]:
             "id": action_id,
             "description": ACTION_DESCRIPTIONS.get(name, name.replace("_", " ")),
             "source": "sdk",
+            "group": action_group(name),
             "available": action_id in firmware_set if firmware_ids else None,
         })
 
@@ -500,6 +567,8 @@ def status_snapshot() -> Dict[str, Any]:
         "last_action": _last_action,
         "last_skip_reason": _last_skip_reason,
         "in_flight": _in_flight,
+        "firmware_reject_cooldown_s": max(0.0, round(_firmware_reject_until - time.time(), 1)),
+        "policy": policy_snapshot(),
     }
 
 
@@ -647,6 +716,9 @@ __all__ = [
     "ACTION_DESCRIPTIONS",
     "RELEASE_ARM_ID",
     "INTENSITY_PROFILES",
+    "AUTO_SPEECH_SAFE_ACTIONS",
+    "MANUAL_SAFE_ACTIONS",
+    "MANUAL_RESTRICTED_ACTIONS",
     "Conductor",
     "execute",
     "release",
@@ -654,7 +726,10 @@ __all__ = [
     "is_enabled",
     "is_speech_enabled",
     "set_speech_enabled",
+    "is_manual_restricted_enabled",
+    "set_manual_restricted_enabled",
     "resolve_profile",
+    "policy_snapshot",
     "list_safe_actions",
     "action_catalog",
     "status_snapshot",

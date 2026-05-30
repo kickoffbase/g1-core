@@ -84,6 +84,19 @@ def speak_personality_outro() -> Optional[dict]:
     return say(line) if line else None
 
 
+def _fire_opening_gesture(slug: str) -> None:
+    """Run an opening gesture without blocking TTS (greet + wave in parallel)."""
+    try:
+        result = gestures.execute(
+            slug,
+            source="opening_gesture",
+            bypass_rate_limit=True,
+        )
+        log.info("speak: opening gesture %s", result)
+    except Exception:
+        log.debug("opening gesture raised", exc_info=True)
+
+
 def _say_locked(text: str, opening_gesture: Optional[str] = None) -> dict:
     system_player: Optional[SystemAudioPlayer] = None
     played_bytes = 0
@@ -121,12 +134,14 @@ def _say_locked(text: str, opening_gesture: Optional[str] = None) -> dict:
     eta_s = max(0.0, len(text) / _AVG_CHARS_PER_SEC + (settings.audio_preroll_ms / 1000.0))
     try:
         if opening_gesture:
-            result = gestures.execute(
-                opening_gesture,
-                source="opening_gesture",
-                bypass_rate_limit=True,
-            )
-            log.info("speak: opening gesture %s", result)
+            # Fire the wave (or other opener) while TTS connects and streams —
+            # don't block speech on arm_execute / SDK round-trip.
+            threading.Thread(
+                target=_fire_opening_gesture,
+                args=(opening_gesture,),
+                daemon=True,
+                name="opening-gesture",
+            ).start()
         else:
             sched = conductor.start(eta_s)
             log.info("speak: gesture conductor %s", sched)

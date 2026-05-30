@@ -57,6 +57,7 @@ class _ConfigPayload(BaseModel):
     .env edit + restart. Currently just `speech_enabled`."""
 
     speech_enabled: Optional[bool] = None
+    manual_restricted_enabled: Optional[bool] = None
 
 
 def _check_auth(x_api_key: Optional[str]) -> None:
@@ -99,6 +100,7 @@ class GestureService(Service):
                 "catalog": catalog["actions"],
                 "firmware": catalog["firmware"],
                 "profile": gestures.status_snapshot(),
+                "policy": gestures.policy_snapshot(),
             }
 
         @router.get("")
@@ -156,8 +158,10 @@ class GestureService(Service):
             _check_auth(x_api_key)
             return {
                 "speech_enabled": gestures.is_speech_enabled(),
+                "manual_restricted_enabled": gestures.is_manual_restricted_enabled(),
                 "master_enabled": bool(settings.gestures_enabled),
                 "personality_enabled": gestures.is_enabled(),
+                "policy": gestures.policy_snapshot(),
             }
 
         @router.post("/config")
@@ -168,10 +172,14 @@ class GestureService(Service):
             _check_auth(x_api_key)
             if payload.speech_enabled is not None:
                 gestures.set_speech_enabled(payload.speech_enabled)
+            if payload.manual_restricted_enabled is not None:
+                gestures.set_manual_restricted_enabled(payload.manual_restricted_enabled)
             return {
                 "speech_enabled": gestures.is_speech_enabled(),
+                "manual_restricted_enabled": gestures.is_manual_restricted_enabled(),
                 "master_enabled": bool(settings.gestures_enabled),
                 "personality_enabled": gestures.is_enabled(),
+                "policy": gestures.policy_snapshot(),
             }
 
         @router.get("/preview")

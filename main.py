@@ -41,6 +41,7 @@ from services.bluetooth import BluetoothService
 from services.camera import CameraService
 from services.gestures import GestureService
 from services.music import MusicService
+from services.robot_control import RobotControlService
 from services.tunnel import TunnelService
 from services.watchdog import WatchdogService
 from services.webhook import WebhookService
@@ -254,6 +255,7 @@ def main() -> int:
     service_registry.register(CameraService())
     service_registry.register(MusicService())
     service_registry.register(GestureService())
+    service_registry.register(RobotControlService())
     # WebhookService gets the registry explicitly: when started via
     # `python3 -m main` the running module is `__main__`, while `from main
     # import service_registry` would re-import a fresh, empty copy under
