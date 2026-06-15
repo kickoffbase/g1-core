@@ -25,7 +25,9 @@ Schema (only `slug` is required):
     }
 
 Active personality is persisted to `state/active_personality` so a runtime
-switch survives a service restart.
+switch survives a service restart. That file overrides `PERSONALITY` in `.env`
+on boot — delete it (or switch via `/control/personality`) to pick up a new
+env default.
 """
 
 from __future__ import annotations
@@ -144,6 +146,14 @@ _BUILTIN_FALLBACK = Personality(
 )
 
 
+class PersonalityNotFoundError(Exception):
+    """Requested slug is not loadable from Supabase or local JSON."""
+
+    def __init__(self, slug: str) -> None:
+        self.slug = slug
+        super().__init__(slug)
+
+
 _active: Optional[Personality] = None
 _change_listeners: List["callable[[Personality], None]"] = []
 _db_config_warning_logged = False
@@ -180,12 +190,19 @@ def list_details() -> List[Dict[str, Any]]:
                 log.warning("Skipping broken DB personality row %s: %s", row.get("slug"), e)
         for slug in _list_disk_available():
             if slug not in by_slug:
-                by_slug[slug] = _load_disk(slug).to_dict()
+                loaded = _try_load(slug)
+                if loaded is not None:
+                    by_slug[slug] = loaded.to_dict()
         if by_slug:
             return [by_slug[s] for s in sorted(by_slug)]
         if db_rows == []:
             log.warning("No enabled DB personality details for robot %s — using local fallback", settings.supabase_robot_id)
-    return [_load_disk(slug).to_dict() for slug in _list_disk_available()]
+    out: List[Dict[str, Any]] = []
+    for slug in _list_disk_available():
+        loaded = _try_load(slug)
+        if loaded is not None:
+            out.append(loaded.to_dict())
+    return out
 
 
 def _list_disk_available() -> List[str]:
@@ -200,15 +217,27 @@ def _list_disk_available() -> List[str]:
 def get() -> Personality:
     with _lock:
         if _active is None:
-            return set_active(_load_persisted_slug() or settings.personality, persist=False)
+            slug, source = _resolve_boot_slug()
+            persona = _try_load(slug) or _BUILTIN_FALLBACK
+            _active = persona
+            log.info(
+                "Boot personality: %s (%s) [source=%s]",
+                persona.display_name or persona.slug,
+                persona.slug,
+                source,
+            )
+            return persona
         return _active
 
 
 def set_active(slug: str, persist: bool = True) -> Personality:
-    """Switch to <slug>. Falls back to built-in if file is broken/missing."""
+    """Switch to <slug>. Raises PersonalityNotFoundError if unavailable."""
     global _active
+    slug = slug.strip()
+    persona = _try_load(slug)
+    if persona is None:
+        raise PersonalityNotFoundError(slug)
     with _lock:
-        persona = _load(slug)
         _active = persona
         if persist:
             _persist_slug(persona.slug)
@@ -226,14 +255,48 @@ def on_change(callback) -> None:
     _change_listeners.append(callback)
 
 
-def _load(slug: str) -> Personality:
+def _resolve_boot_slug() -> tuple[str, str]:
+    """Pick the slug to load at boot: persisted state → PERSONALITY env → builtin."""
+    persisted = _load_persisted_slug()
+    env_slug = (settings.personality or "").strip()
+
+    if persisted and _try_load(persisted) is not None:
+        if env_slug and env_slug != persisted:
+            log.info(
+                "Persisted personality '%s' overrides PERSONALITY=%s "
+                "(delete state/active_personality to use the env default)",
+                persisted,
+                env_slug,
+            )
+        return persisted, "persisted"
+
+    if persisted:
+        log.warning(
+            "Persisted personality '%s' unavailable — trying PERSONALITY=%s",
+            persisted,
+            env_slug or _BUILTIN_FALLBACK.slug,
+        )
+
+    if env_slug and _try_load(env_slug) is not None:
+        return env_slug, "env"
+
+    if env_slug:
+        log.warning("PERSONALITY=%s unavailable — using built-in fallback", env_slug)
+
+    return _BUILTIN_FALLBACK.slug, "fallback"
+
+
+def _try_load(slug: str) -> Optional[Personality]:
+    slug = slug.strip()
+    if not slug:
+        return None
     db_persona = _load_db(slug)
     if db_persona is not None:
         return db_persona
-    return _load_disk(slug)
+    return _try_load_disk(slug)
 
 
-def _load_disk(slug: str) -> Personality:
+def _try_load_disk(slug: str) -> Optional[Personality]:
     path = _DIR / f"{slug}.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -241,10 +304,10 @@ def _load_disk(slug: str) -> Personality:
             data["slug"] = slug
         return Personality.from_dict(data)
     except FileNotFoundError:
-        log.warning("Personality '%s' not found at %s — using fallback", slug, path)
+        return None
     except Exception as e:
-        log.error("Personality '%s' broken (%s) — using fallback", slug, e)
-    return _BUILTIN_FALLBACK
+        log.error("Personality '%s' broken (%s)", slug, e)
+        return None
 
 
 def _persist_slug(slug: str) -> None:

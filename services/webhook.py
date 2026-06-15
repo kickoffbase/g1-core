@@ -417,7 +417,10 @@ class WebhookService(Service):
                 raise HTTPException(status_code=400, detail="slug is required")
             if slug not in personality.list_available():
                 raise HTTPException(status_code=404, detail=f"unknown personality '{slug}'")
-            persona = personality.set_active(slug)
+            try:
+                persona = personality.set_active(slug)
+            except personality.PersonalityNotFoundError:
+                raise HTTPException(status_code=404, detail=f"personality '{slug}' could not be loaded")
             return {
                 "ok": True,
                 "active": persona.slug,

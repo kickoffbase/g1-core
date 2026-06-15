@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     # ── Personality ────────────────────────────────────────────────────
     # Default slug at boot. The active slug is persisted in `state/active_personality`
     # so a webhook switch survives restart.
-    personality: str = Field(default="comedian")
+    personality: str = Field(default="gekko")
     supabase_url: str = Field(default="", description="Supabase project URL for robot_personalities")
     supabase_service_role_key: str = Field(default="", description="Service-role key used by g1-core only")
     supabase_robot_id: str = Field(default="", description="robots.id for this physical robot")
