@@ -219,6 +219,7 @@ def _list_disk_available() -> List[str]:
 
 
 def get() -> Personality:
+    global _active
     with _lock:
         if _active is None:
             slug, source = _resolve_boot_slug()
