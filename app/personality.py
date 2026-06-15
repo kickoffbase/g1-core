@@ -24,10 +24,14 @@ Schema (only `slug` is required):
       }
     }
 
-Active personality is persisted to `state/active_personality` so a runtime
-switch survives a service restart. That file overrides `PERSONALITY` in `.env`
-on boot — delete it (or switch via `/control/personality`) to pick up a new
-env default.
+Boot resolution order for the active personality (highest priority first):
+    1. Supabase  — first enabled row with `is_active = true` for this robot.
+    2. `PERSONALITY` env — the configured default slug.
+    3. Built-in  — `comedian` fallback (always loadable).
+
+Switching via `/control/personality` writes the active flag back to Supabase
+(so the admin UI reflects it and it survives a restart) and also drops a local
+`state/active_personality` cache for offline inspection.
 """
 
 from __future__ import annotations
@@ -240,6 +244,7 @@ def set_active(slug: str, persist: bool = True) -> Personality:
     with _lock:
         _active = persona
         if persist:
+            _set_db_active(persona.slug)
             _persist_slug(persona.slug)
         log.info("Personality active: %s (%s)", persona.display_name or persona.slug, persona.slug)
     for cb in list(_change_listeners):
@@ -256,30 +261,16 @@ def on_change(callback) -> None:
 
 
 def _resolve_boot_slug() -> tuple[str, str]:
-    """Pick the slug to load at boot: persisted state → PERSONALITY env → builtin."""
-    persisted = _load_persisted_slug()
+    """Pick the slug to load at boot: DB active → PERSONALITY env → builtin."""
+    db_active = _fetch_db_active_slug()
+    if db_active and _try_load(db_active) is not None:
+        return db_active, "db"
+    if db_active:
+        log.warning("Active DB personality '%s' unavailable — trying PERSONALITY env", db_active)
+
     env_slug = (settings.personality or "").strip()
-
-    if persisted and _try_load(persisted) is not None:
-        if env_slug and env_slug != persisted:
-            log.info(
-                "Persisted personality '%s' overrides PERSONALITY=%s "
-                "(delete state/active_personality to use the env default)",
-                persisted,
-                env_slug,
-            )
-        return persisted, "persisted"
-
-    if persisted:
-        log.warning(
-            "Persisted personality '%s' unavailable — trying PERSONALITY=%s",
-            persisted,
-            env_slug or _BUILTIN_FALLBACK.slug,
-        )
-
     if env_slug and _try_load(env_slug) is not None:
         return env_slug, "env"
-
     if env_slug:
         log.warning("PERSONALITY=%s unavailable — using built-in fallback", env_slug)
 
@@ -322,18 +313,6 @@ def _persist_slug(slug: str) -> None:
             log.warning("Could not persist active personality to %s (%s): %s", path, slug, e)
 
 
-def _load_persisted_slug() -> Optional[str]:
-    for path in (_STATE_FILE, _FALLBACK_STATE_FILE):
-        try:
-            if path.is_file():
-                slug = path.read_text(encoding="utf-8").strip()
-                if slug:
-                    return slug
-        except Exception as e:
-            log.warning("Could not read persisted personality from %s: %s", path, e)
-    return None
-
-
 def _load_db(slug: str) -> Optional[Personality]:
     rows = _fetch_db_personalities(slug=slug)
     if not rows:
@@ -350,6 +329,7 @@ def _load_db(slug: str) -> Optional[Personality]:
 def _fetch_db_personalities(
     slug: Optional[str] = None,
     fields: str = "slug,display_name,description,intro_line,outro_line,voice,gestures",
+    active_only: bool = False,
 ) -> Optional[List[Dict[str, Any]]]:
     global _db_config_warning_logged
 
@@ -368,6 +348,9 @@ def _fetch_db_personalities(
         "is_enabled": "eq.true",
         "order": "slug.asc",
     }
+    if active_only:
+        params["is_active"] = "eq.true"
+        params["limit"] = "1"
     if slug is not None:
         params["slug"] = f"eq.{slug.strip()}"
         params["limit"] = "1"
@@ -390,6 +373,62 @@ def _fetch_db_personalities(
     except (OSError, URLError, json.JSONDecodeError, ValueError) as e:
         log.warning("Supabase personalities unavailable (%s) — using local JSON fallback", e)
         return None
+
+
+def _fetch_db_active_slug() -> Optional[str]:
+    """Slug of the first enabled+active personality for this robot, or None.
+
+    None means "no active row / Supabase unreachable" → caller falls through
+    to the PERSONALITY env default."""
+    rows = _fetch_db_personalities(fields="slug", active_only=True)
+    if not rows:
+        return None
+    return str(rows[0].get("slug") or "").strip() or None
+
+
+def _set_db_active(slug: str) -> None:
+    """Best-effort write-back of the active flag. Clears any other active row
+    first so a single switch leaves exactly one active personality in the DB."""
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_service_role_key
+    robot_id = settings.supabase_robot_id.strip()
+    if not base or not key or not robot_id:
+        return
+
+    cleared = _patch_db_personalities(
+        {"robot_id": f"eq.{robot_id}", "is_active": "eq.true"},
+        {"is_active": False},
+    )
+    if not cleared:
+        return
+    if not _patch_db_personalities(
+        {"robot_id": f"eq.{robot_id}", "slug": f"eq.{slug.strip()}"},
+        {"is_active": True},
+    ):
+        log.warning("Could not mark personality '%s' active in Supabase", slug)
+
+
+def _patch_db_personalities(filters: Dict[str, str], body: Dict[str, Any]) -> bool:
+    base = settings.supabase_url.rstrip("/")
+    key = settings.supabase_service_role_key
+    url = f"{base}/rest/v1/robot_personalities?{urlencode(filters)}"
+    req = Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        method="PATCH",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        },
+    )
+    try:
+        with urlopen(req, timeout=settings.supabase_timeout_s):
+            return True
+    except (OSError, URLError) as e:
+        log.warning("Supabase personality update failed (%s)", e)
+        return False
 
 
 def _opt_float(v: Any) -> Optional[float]:
