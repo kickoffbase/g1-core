@@ -3,6 +3,10 @@ Personalities
 =============
 Each personality is a JSON file in `personalities/<slug>.json`.
 
+When Supabase is configured, enabled rows in `robot_personalities` are loaded
+first; local JSON files supplement any slug not in the DB (and serve as
+fallback when Supabase is unreachable). On slug conflict, the DB row wins.
+
 Schema (only `slug` is required):
     {
       "slug":         "comedian",
@@ -145,30 +149,42 @@ _change_listeners: List["callable[[Personality], None]"] = []
 _db_config_warning_logged = False
 
 
+def _merge_slugs(db_rows: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """Union of enabled DB slugs and local JSON slugs. DB wins on slug conflict at load time."""
+    disk = set(_list_disk_available())
+    if db_rows is None:
+        return sorted(disk)
+    db = {str(row.get("slug") or "").strip() for row in db_rows if row.get("slug")}
+    return sorted(db | disk)
+
+
 def list_available() -> List[str]:
-    """Sorted slugs of personalities present in DB, falling back to disk."""
+    """Sorted slugs from Supabase (when reachable) merged with local JSON files."""
     db_rows = _fetch_db_personalities(fields="slug")
-    if db_rows:
-        return sorted({str(row.get("slug") or "").strip() for row in db_rows if row.get("slug")})
-    if db_rows == []:
+    slugs = _merge_slugs(db_rows)
+    if db_rows == [] and not slugs:
         log.warning("No enabled DB personalities for robot %s — using local fallback", settings.supabase_robot_id)
-    return _list_disk_available()
+    return slugs or _list_disk_available()
 
 
 def list_details() -> List[Dict[str, Any]]:
-    """Personality metadata for control UIs. Best-effort DB, then disk."""
+    """Personality metadata for control UIs. DB rows merged with disk-only JSON."""
     db_rows = _fetch_db_personalities()
-    if db_rows:
-        out: List[Dict[str, Any]] = []
+    if db_rows is not None:
+        by_slug: Dict[str, Dict[str, Any]] = {}
         for row in db_rows:
             try:
-                out.append(Personality.from_dict(row).to_dict())
+                persona = Personality.from_dict(row)
+                by_slug[persona.slug] = persona.to_dict()
             except Exception as e:
                 log.warning("Skipping broken DB personality row %s: %s", row.get("slug"), e)
-        if out:
-            return out
-    if db_rows == []:
-        log.warning("No enabled DB personality details for robot %s — using local fallback", settings.supabase_robot_id)
+        for slug in _list_disk_available():
+            if slug not in by_slug:
+                by_slug[slug] = _load_disk(slug).to_dict()
+        if by_slug:
+            return [by_slug[s] for s in sorted(by_slug)]
+        if db_rows == []:
+            log.warning("No enabled DB personality details for robot %s — using local fallback", settings.supabase_robot_id)
     return [_load_disk(slug).to_dict() for slug in _list_disk_available()]
 
 

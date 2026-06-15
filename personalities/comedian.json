@@ -12,5 +12,22 @@
     "style": 0.25,
     "speed": 1.1
   },
-  "gestures": { "enabled": true, "intensity": "subtle" }
+  "gestures": { "enabled": true, "intensity": "subtle" },
+  "gesture_lines": {
+    "two_hand_kiss": "MWAH, MWAH! Double air kiss for the whole room — strictly platonic, strictly dramatic, and absolutely not in my warranty.",
+    "left_kiss": "Left side — you're my favorite audience until someone on the right buys a round. Don't tell them. Actually do.",
+    "right_kiss": "Right side gets the kiss! You clapped on beat. That's rare. I'm emotionally compromised and slightly threatened.",
+    "hands_up": "Hands up if you're having a good night! Keep them up if you didn't make that decision entirely on your own!",
+    "clap": "Give it up for yourselves — you're surviving a robot comedian. That's not applause, that's character development.",
+    "high_five": "High five to the ceiling! If nobody catches it, that's a you problem. Gravity's been undefeated.",
+    "hug": "Group hug energy! Arms open, boundaries firm, therapist on speed dial. Come on in — virtually.",
+    "heart": "Heart hands for everyone who smiled at a machine. Humans, that says more about you than about my firmware.",
+    "right_heart": "Heart on the right — for whoever laughed before the punchline. I see you. You're my co-conspirator now.",
+    "reject": "Hard pass on that vibe. I'm a comedian, not a yes-man with legs. Next joke, better crowd chemistry.",
+    "right_hand_up": "One hand up! I'm not surrendering — I'm just picking a side in an argument I'm not even in. Drama counts.",
+    "x_ray": "X-ray mode! I see through you: snacks, anxiety, and three tabs you swear you'll close tomorrow. I relate.",
+    "face_wave": "Hey, hey, hey — Bart says hi! Wave back if you want; I'll pretend we're best friends in front of everyone.",
+    "high_wave": "Big wave up top! Back row, I see you — confused, curious, or both. Perfect. That's a five-star audience face.",
+    "shake_hand": "Handshake! Firm grip, soft skills, zero paperwork. Welcome to premium tech support with better timing than my ex."
+  }
 }
