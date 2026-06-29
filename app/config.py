@@ -165,6 +165,67 @@ class Settings(BaseSettings):
         description="After any locomotion command, block gestures for this many seconds.",
     )
 
+    # ── Teach Mode (low-level arm record / replay) ─────────────────────
+    # The low-level counterpart to gestures. When enabled, an operator can
+    # record a custom arm motion by physically moving G1's arms, then
+    # replay it on demand by name. Streams joint targets over rt/arm_sdk —
+    # so it is OFF by default and must be explicitly switched on per-robot.
+    #
+    # SAFETY: replay drives the arms with position control. Always first
+    # validate a new recording with the robot on a stand or with an
+    # operator ready on the e-stop (L2+B on the remote, or POST
+    # /teach/stop). See app/teach.py for the full safety model.
+    teach_enabled: bool = Field(
+        default=False,
+        description="Master switch for low-level arm record/replay. False = the whole subsystem no-ops.",
+    )
+    teach_record_hz: float = Field(
+        default=50.0,
+        ge=10.0,
+        le=200.0,
+        description="Sampling rate while recording an arm trajectory.",
+    )
+    teach_max_duration_s: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=600.0,
+        description="Hard cap on a single recording length (also auto-stops a forgotten session).",
+    )
+    teach_include_waist: bool = Field(
+        default=False,
+        description="Also capture/replay the 3 waist joints (12-14). Off = arms only (15-28), safest.",
+    )
+    teach_record_kd: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=10.0,
+        description="Damping applied to the arms during recording so they stay movable but not floppy (kp is always 0).",
+    )
+    teach_play_kp: float = Field(
+        default=40.0,
+        ge=0.0,
+        le=120.0,
+        description="Position gain during replay. Higher = stiffer/faster tracking, but jerkier. Keep conservative.",
+    )
+    teach_play_kd: float = Field(
+        default=1.5,
+        ge=0.0,
+        le=10.0,
+        description="Velocity gain during replay.",
+    )
+    teach_ramp_s: float = Field(
+        default=1.0,
+        ge=0.2,
+        le=5.0,
+        description="Seconds to ramp the arm_sdk weight 0→1 (take control) and 1→0 (hand back to locomotion).",
+    )
+    teach_approach_s: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=10.0,
+        description="Seconds to smoothly move from the current pose to the recording's first frame before playback.",
+    )
+
     # ── Watchdog ───────────────────────────────────────────────────────
     watchdog_interval_s: float = Field(default=15.0, description="How often to re-check subsystems")
 

@@ -3,4 +3,5 @@ __pycache__/
 *.pyc
 .venv/
 state/active_personality
+recordings/
 .DS_Store

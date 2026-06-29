@@ -31,7 +31,7 @@ from rich.logging import RichHandler
 from app import __version__, git_full_sha, git_repo_url, git_sha, version_string
 from app import audio_sink
 from app import bluetooth as bt
-from app import command_bus, gestures, log_ring, personality
+from app import command_bus, gestures, log_ring, personality, teach
 from app.command_bus import bus
 from app.config import settings
 from app.robot import robot
@@ -42,6 +42,7 @@ from services.camera import CameraService
 from services.gestures import GestureService
 from services.music import MusicService
 from services.robot_control import RobotControlService
+from services.teach import TeachService
 from services.tunnel import TunnelService
 from services.watchdog import WatchdogService
 from services.webhook import WebhookService
@@ -174,6 +175,12 @@ def _execute(cmd: command_bus.Command) -> None:
             result = gestures.execute(action, source=cmd.source or "bus")
             if result.get("ok") and cmd.payload.get("auto_release"):
                 gestures.schedule_release()
+        elif cmd.kind == command_bus.KIND_TEACH_PLAY:
+            name = (cmd.payload.get("name") or "").strip()
+            if not name:
+                bus.mark_failed(cmd, "teach payload missing 'name'")
+                return
+            result = teach.teach.play(name)
         else:
             bus.mark_failed(cmd, f"unknown kind: {cmd.kind}")
             return
@@ -256,6 +263,7 @@ def main() -> int:
     service_registry.register(MusicService())
     service_registry.register(GestureService())
     service_registry.register(RobotControlService())
+    service_registry.register(TeachService())
     # WebhookService gets the registry explicitly: when started via
     # `python3 -m main` the running module is `__main__`, while `from main
     # import service_registry` would re-import a fresh, empty copy under
